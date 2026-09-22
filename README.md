@@ -82,8 +82,8 @@ npm run dev      # lancer en développement
 npm run build    # produire l'installeur (.dmg sur Mac, .exe/.msi sur Windows)
 ```
 
-L'intégration continue construit les installeurs macOS (Intel et Apple
-Silicon) et Windows à chaque envoi : ils se récupèrent dans les artefacts du
+L'intégration continue construit un installeur macOS universel (Intel et
+Apple Silicon dans un seul .dmg) et un installeur Windows (.exe) à chaque envoi : ils se récupèrent dans les artefacts du
 build, sans rien installer localement.
 
 Pour remettre une version aux clients, poser une étiquette :

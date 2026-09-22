@@ -399,6 +399,10 @@ fn un_disque_qui_tombe_en_cours_de_copie_nempeche_pas_lautre() {
     let mut rapport = None;
     let r = copy::decharger(&opts, &mut |p| {
         if let offload_core::copy::Progression::Fichier { index: 3, .. } = p {
+            // Depuis que chaque destination avance à son rythme, la seconde
+            // peut n'avoir encore rien créé quand la lecture atteint ce
+            // fichier : on crée le dossier nous-mêmes avant d'y poser le piège.
+            fs::create_dir_all(piege.parent().unwrap()).unwrap();
             fs::write(&piege, b"le disque ne repond plus").unwrap();
         }
     });

@@ -259,7 +259,7 @@ fn boucle_destination(
                 etat.fichier = None;
 
                 let (resultat, mode) = if let Some(motif) = etat.erreur.clone() {
-                    let _ = fs::remove_file(&etat.temp);
+                    effacer(&etat.temp);
                     (Err(motif), None)
                 } else {
                     // Relecture depuis le support, sans passer par le cache.
@@ -275,13 +275,13 @@ fn boucle_destination(
                                     }
                                 },
                                 Err(detail) => {
-                                    let _ = fs::remove_file(&etat.temp);
+                                    effacer(&etat.temp);
                                     (Err(detail), Some(mode))
                                 }
                             }
                         }
                         Err(e) => {
-                            let _ = fs::remove_file(&etat.temp);
+                            effacer(&etat.temp);
                             (Err(format!("relecture impossible : {e}")), None)
                         }
                     }
@@ -337,6 +337,37 @@ struct Destination {
     attente: Cumul,
 }
 
+/// Sous Windows, un antivirus ou l'indexation ouvre souvent un fichier juste
+/// après son écriture et le verrouille brièvement : un renommage ou une
+/// suppression échoue alors avec « accès refusé » ou « fichier utilisé par un
+/// autre processus ». On réessaie pendant au plus une seconde avant de
+/// conclure à un vrai problème.
+#[cfg(windows)]
+fn avec_patience(mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    // 5 : accès refusé, 32 : violation de partage, 33 : violation de verrou.
+    const VERROUS: [i32; 3] = [5, 32, 33];
+    let mut essais = 0;
+    loop {
+        match f() {
+            Err(e) if essais < 20 && e.raw_os_error().is_some_and(|c| VERROUS.contains(&c)) => {
+                essais += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            autre => return autre,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn avec_patience(mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    f()
+}
+
+/// Supprime une copie ratée, en tolérant un verrou passager.
+fn effacer(temp: &Path) {
+    let _ = avec_patience(|| fs::remove_file(temp));
+}
+
 /// Renomme le fichier temporaire vers son nom définitif.
 fn valider(temp: &Path, final_: &Path) -> io::Result<()> {
     if final_.exists() {
@@ -345,7 +376,7 @@ fn valider(temp: &Path, final_: &Path) -> io::Result<()> {
             format!("{} existe déjà", final_.display()),
         ));
     }
-    fs::rename(temp, final_)
+    avec_patience(|| fs::rename(temp, final_))
 }
 
 fn chemin_temporaire(final_: &Path) -> PathBuf {

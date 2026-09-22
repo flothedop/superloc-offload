@@ -26,6 +26,7 @@ fs4 = "0.13"
 whoami = "1"
 quick-xml = "0.42.0"
 sysinfo = "0.39.6"
+dunce = "1.0.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

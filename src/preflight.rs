@@ -30,7 +30,9 @@ pub fn controler(scan: &Scan, destinations: &[PathBuf], source: &Path) -> io::Re
         ));
     }
 
-    let source_abs = source.canonicalize()?;
+    // dunce : sous Windows, évite les chemins « verbatim » (préfixe \\?\) dans
+    // les messages et les comparaisons.
+    let source_abs = dunce::canonicalize(source)?;
     let mut avertissements = Vec::new();
     let mut vues: Vec<PathBuf> = Vec::new();
 
@@ -67,7 +69,7 @@ pub fn controler(scan: &Scan, destinations: &[PathBuf], source: &Path) -> io::Re
             ));
         }
 
-        let parent_abs = parent.canonicalize()?;
+        let parent_abs = dunce::canonicalize(parent)?;
 
         // Copier dans la source elle-même créerait une récursion.
         if parent_abs.starts_with(&source_abs) {

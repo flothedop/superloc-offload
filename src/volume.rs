@@ -37,17 +37,24 @@ fn est_reseau(systeme: &str, chemin: &Path) -> bool {
     if reseau.iter().any(|r| f.contains(r)) {
         return true;
     }
-    // Chemin UNC sous Windows.
+    // Chemin UNC sous Windows : \\serveur\partage ou \\?\UNC\serveur\partage.
+    // Un chemin « verbatim » local (\\?\C:\...) commence aussi par deux
+    // barres obliques inverses mais n'a rien d'un volume réseau.
     let s = chemin.to_string_lossy();
+    if let Some(reste) = s.strip_prefix("\\\\?\\") {
+        return reste.to_ascii_uppercase().starts_with("UNC\\");
+    }
     s.starts_with("\\\\") || s.starts_with("//")
 }
 
 /// Renvoie le volume qui porte `chemin`, c'est-à-dire le point de montage
 /// le plus spécifique dont il dépend.
 pub fn du_chemin(chemin: &Path) -> Option<Volume> {
-    let absolu = chemin
-        .canonicalize()
-        .unwrap_or_else(|_| chemin.to_path_buf());
+    // Sous Windows, canonicalize() renvoie un chemin « verbatim » (\\?\D:\...)
+    // qui ne commence jamais par un point de montage ordinaire (D:\) : la
+    // comparaison échouait toujours et aucun volume n'était trouvé. dunce
+    // renvoie la forme usuelle quand elle existe.
+    let absolu = dunce::canonicalize(chemin).unwrap_or_else(|_| chemin.to_path_buf());
 
     let disques = Disks::new_with_refreshed_list();
     let mut meilleur: Option<(usize, Volume)> = None;
@@ -94,6 +101,13 @@ mod tests {
     #[test]
     fn reconnait_un_chemin_unc_windows() {
         assert!(est_reseau("ntfs", Path::new(r"\\serveur\rushs")));
+        assert!(est_reseau("ntfs", Path::new(r"\\?\UNC\serveur\rushs")));
+    }
+
+    #[test]
+    fn un_chemin_verbatim_local_nest_pas_reseau() {
+        // Forme renvoyée par canonicalize() sous Windows pour un disque local.
+        assert!(!est_reseau("ntfs", Path::new(r"\\?\D:\rushs")));
     }
 
     #[test]

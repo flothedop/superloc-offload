@@ -41,18 +41,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Un seul installeur Mac, universel : Intel et Apple Silicon.
+          # (Les machines macos-13 de GitHub, seules à être Intel, ont été
+          # retirées fin 2025.)
           - os: macos-latest
-            cible: aarch64-apple-darwin
-          - os: macos-13
-            cible: x86_64-apple-darwin
+            cible: universal-apple-darwin
+            rust_cibles: aarch64-apple-darwin,x86_64-apple-darwin
+            paquets: app,dmg
+          # Windows : installeur .exe (NSIS) seulement. Le .msi passe par
+          # l'outil WiX, fragile sur les machines de GitHub, et ne sert
+          # vraiment qu'aux déploiements en parc d'entreprise.
           - os: windows-latest
             cible: x86_64-pc-windows-msvc
+            rust_cibles: x86_64-pc-windows-msvc
+            paquets: nsis
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.cible }}
+          targets: ${{ matrix.rust_cibles }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -62,7 +70,7 @@ jobs:
         run: npm install
 
       - name: Construire l'application
-        run: npm run build -- --target ${{ matrix.cible }}
+        run: npm run build -- --target ${{ matrix.cible }} --bundles ${{ matrix.paquets }}
 
       - name: Récupérer les installeurs
         uses: actions/upload-artifact@v4
@@ -71,5 +79,4 @@ jobs:
           path: |
             target/${{ matrix.cible }}/release/bundle/dmg/*.dmg
             target/${{ matrix.cible }}/release/bundle/nsis/*.exe
-            target/${{ matrix.cible }}/release/bundle/msi/*.msi
           if-no-files-found: warn
