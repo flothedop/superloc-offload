@@ -1,0 +1,19 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Tauri
+/src-tauri/gen
+/src-tauri/target
+
+# Node
+node_modules
+package-lock.json
+
+# Dossiers de test créés par les tests d'intégrité
+/offload-test-*
+
+# Systèmes
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,75 @@
+name: Build et tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  moteur:
+    name: Moteur — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check -p offload-core
+
+      - name: Clippy
+        run: cargo clippy -p offload-core --all-targets -- -D warnings
+
+      # Les tests d'intégrité corrompent volontairement des copies : bit
+      # retourné, fichier tronqué, segment de clip absent, disque qui tombe.
+      # Ils vérifient aussi que la relecture contourne bien le cache du
+      # système sur cette plateforme.
+      - name: Tests d'intégrité
+        run: cargo test -p offload-core --all-targets
+
+  application:
+    name: Application — ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cible: aarch64-apple-darwin
+          - os: macos-13
+            cible: x86_64-apple-darwin
+          - os: windows-latest
+            cible: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cible }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installer l'outil Tauri
+        run: npm install
+
+      - name: Construire l'application
+        run: npm run build -- --target ${{ matrix.cible }}
+
+      - name: Récupérer les installeurs
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperLoc-Offload-${{ matrix.cible }}
+          path: |
+            target/${{ matrix.cible }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.cible }}/release/bundle/nsis/*.exe
+            target/${{ matrix.cible }}/release/bundle/msi/*.msi
+          if-no-files-found: warn

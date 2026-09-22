@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperLoc Offload</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Bandeau d'état : porte le verdict et sert lui-même de barre de progression -->
+<header class="bandeau" id="bandeau" data-etat="repos">
+  <div class="bandeau__remplissage" id="remplissage"></div>
+  <div class="bandeau__contenu">
+    <span class="tally" id="tally" aria-hidden="true"></span>
+    <div class="bandeau__texte">
+      <h1 class="bandeau__verdict" id="verdict">Prêt à décharger</h1>
+      <p class="bandeau__detail" id="detail" aria-live="polite">Choisir une carte et au moins un disque.</p>
+    </div>
+    <div class="bandeau__chiffre cache" id="chiffre">0<span>%</span></div>
+  </div>
+</header>
+
+<section class="travail">
+  <div>
+    <div class="etiquette">Carte <span class="compte" id="source-structure"></span></div>
+
+    <button class="carte-vide" id="carte-vide" type="button">
+      <svg class="glyphe-carte" viewBox="0 0 64 46" aria-hidden="true">
+        <path class="silhouette" d="M4.75 1.75 h44.5 l13 13 v29.5 a1 1 0 0 1 -1 1 H4.75 a3 3 0 0 1 -3 -3 V4.75 a3 3 0 0 1 3 -3 z"/>
+        <rect class="contact" x="8" y="7" width="4" height="13" rx="1.5"/>
+        <rect class="contact" x="15" y="7" width="4" height="13" rx="1.5"/>
+        <rect class="contact" x="22" y="7" width="4" height="13" rx="1.5"/>
+        <rect class="contact" x="29" y="7" width="4" height="13" rx="1.5"/>
+      </svg>
+      <span class="carte-vide__invite">Déposer la carte ici</span>
+      <span class="carte-vide__second">ou cliquer pour la choisir</span>
+    </button>
+
+    <div class="carte-pleine cache" id="carte-pleine">
+      <div class="carte-pleine__nom" id="carte-nom">—</div>
+      <div class="carte-pleine__chemin mono" id="carte-chemin"></div>
+      <div class="carte-pleine__faits">
+        <div><div class="fait__valeur" id="fait-clips">0</div><div class="fait__nom">clips</div></div>
+        <div><div class="fait__valeur" id="fait-fichiers">0</div><div class="fait__nom">fichiers</div></div>
+        <div><div class="fait__valeur" id="fait-taille">0</div><div class="fait__nom">à copier</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="etiquette">Destinations <span class="compte" id="compte-disques">0 sur 3</span></div>
+    <div id="disques"></div>
+    <button class="ajouter" id="ajouter" type="button">Ajouter un disque</button>
+  </div>
+</section>
+
+<div class="actions">
+  <div class="reglages">
+    <label class="reglage">
+      Empreinte
+      <select id="empreinte">
+        <option value="xxh64">xxHash64</option>
+        <option value="xxh64,md5">xxHash64 + MD5</option>
+      </select>
+    </label>
+    <label class="reglage">
+      <input type="checkbox" id="verifier-source">
+      Relire aussi la carte après copie
+    </label>
+  </div>
+  <button class="bouton bouton--sobre" id="btn-verifier" type="button">Vérifier un disque</button>
+  <button class="bouton" id="btn-decharger" type="button" disabled>Décharger</button>
+</div>
+
+<main class="journal">
+  <div class="journal__entete" id="journal-entete">
+    <div>Fichier</div>
+    <div>Clip</div>
+    <div style="text-align:right">Taille</div>
+    <div style="text-align:right" id="entete-dest">Disques</div>
+  </div>
+  <div class="journal__corps" id="journal-corps">
+    <p class="journal__vide" id="journal-vide">Le journal s'écrit ici pendant la copie : un fichier par ligne, son état sur chaque disque.</p>
+  </div>
+</main>
+
+<footer class="pied">
+  <div id="pied-info">Aucune copie en cours</div>
+  <div class="pied__actions">
+    <button class="lien cache" id="btn-dossier" type="button">Ouvrir le dossier</button>
+    <button class="lien cache" id="btn-rapport" type="button">Exporter le rapport</button>
+    <button class="lien cache" id="btn-recommencer" type="button">Nouvelle copie</button>
+    <span class="mono" id="version">v0.1.0</span>
+  </div>
+</footer>
+
+<script src="backend.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

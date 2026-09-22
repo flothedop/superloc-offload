@@ -1,0 +1,485 @@
+/* ==========================================================================
+   SuperLoc Offload — feuille de style
+   Repères : l'outil s'utilise sur un plateau, souvent dans le noir, toujours
+   dans l'urgence. Une seule question compte : puis-je effacer la carte.
+   Règle absolue : le vert et le rouge ne servent jamais à décorer. Ils ne
+   disent qu'une chose — vérifié, ou pas.
+   ========================================================================== */
+
+@font-face { font-family: 'Barlow'; src: url('fonts/barlow-latin-400-normal.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'Barlow'; src: url('fonts/barlow-latin-500-normal.woff2') format('woff2'); font-weight: 500; font-display: block; }
+@font-face { font-family: 'Barlow'; src: url('fonts/barlow-latin-600-normal.woff2') format('woff2'); font-weight: 600; font-display: block; }
+@font-face { font-family: 'Barlow Condensed'; src: url('fonts/barlow-condensed-latin-500-normal.woff2') format('woff2'); font-weight: 500; font-display: block; }
+@font-face { font-family: 'Barlow Condensed'; src: url('fonts/barlow-condensed-latin-600-normal.woff2') format('woff2'); font-weight: 600; font-display: block; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2'); font-weight: 400; font-display: block; }
+@font-face { font-family: 'IBM Plex Mono'; src: url('fonts/ibm-plex-mono-latin-500-normal.woff2') format('woff2'); font-weight: 500; font-display: block; }
+
+:root {
+  /* Graphite froid : la couleur d'une salle de projection, pas un noir pur
+     qui brûle les yeux quand on passe du plateau à l'écran. */
+  --fond:        #14181a;
+  --panneau:     #1b2124;
+  --panneau-haut:#222a2e;
+  --trait:       #2d383d;
+  --trait-fort:  #3d4a50;
+  --texte:       #e6eae9;
+  --texte-moyen: #9aa6ab;
+  --texte-faible:#697579;
+
+  /* Ambre de lampe inactinique : le travail est en cours, on n'ouvre pas. */
+  --safelight:   #e0a03c;
+  --safelight-sourd: #6b4c1c;
+  /* Verdicts, et rien d'autre. */
+  --conforme:    #46a86c;
+  --alerte:      #d9453a;
+
+  --r: 3px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--fond);
+  color: var(--texte);
+  font-family: 'Barlow', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* --- Étiquettes de section : lettrage de flight-case, pas de capitales --- */
+.etiquette {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: .06em;
+  color: var(--texte-moyen);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--trait);
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.etiquette .compte {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--texte-faible);
+  letter-spacing: 0;
+}
+
+.mono { font-family: 'IBM Plex Mono', monospace; font-variant-ligatures: none; }
+
+/* ==========================================================================
+   Bandeau d'état — l'élément unique sur lequel on dépense toute l'audace.
+   Il occupe toute la largeur, il porte le verdict, et pendant la copie
+   c'est lui-même qui se remplit : la barre de progression et le voyant ne
+   font qu'un.
+   ========================================================================== */
+.bandeau {
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 104px;
+  padding: 20px 28px;
+  background: var(--panneau-haut);
+  border-bottom: 1px solid var(--trait);
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  overflow: hidden;
+}
+.bandeau__remplissage {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--safelight-sourd);
+  transition: width .25s linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bandeau__remplissage { transition: none; }
+}
+.bandeau__contenu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+}
+.bandeau__texte { flex: 1; min-width: 0; }
+.bandeau__verdict {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 40px;
+  line-height: 1.05;
+  letter-spacing: .005em;
+  margin: 0;
+}
+.bandeau__detail {
+  color: var(--texte-moyen);
+  font-size: 15px;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bandeau__chiffre {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 52px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--safelight);
+  white-space: nowrap;
+}
+.bandeau__chiffre span { font-size: 24px; color: var(--texte-moyen); margin-left: 2px; }
+
+/* Une pastille de tournage : discrète au repos, elle prend la couleur du
+   verdict. Elle double l'information pour qui distingue mal le rouge du vert. */
+.tally {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid var(--trait-fort);
+  flex: 0 0 auto;
+}
+
+.bandeau[data-etat="copie"] .bandeau__verdict,
+.bandeau[data-etat="verif"] .bandeau__verdict { color: var(--safelight); }
+.bandeau[data-etat="copie"] .tally,
+.bandeau[data-etat="verif"] .tally { background: var(--safelight); border-color: var(--safelight); }
+
+.bandeau[data-etat="conforme"] { background: var(--conforme); border-bottom-color: var(--conforme); }
+.bandeau[data-etat="conforme"] .bandeau__verdict { color: #06210f; }
+.bandeau[data-etat="conforme"] .bandeau__detail { color: #0c3218; }
+.bandeau[data-etat="conforme"] .tally { background: #06210f; border-color: #06210f; }
+.bandeau[data-etat="conforme"] .bandeau__remplissage { display: none; }
+
+.bandeau[data-etat="alerte"] { background: var(--alerte); border-bottom-color: var(--alerte); }
+.bandeau[data-etat="alerte"] .bandeau__verdict { color: #2a0503; }
+.bandeau[data-etat="alerte"] .bandeau__detail { color: #3d0a07; font-weight: 500; }
+.bandeau[data-etat="alerte"] .tally { background: #2a0503; border-color: #2a0503; }
+.bandeau[data-etat="alerte"] .bandeau__remplissage { display: none; }
+
+/* ==========================================================================
+   Plan de travail
+   ========================================================================== */
+.travail {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 32px;
+  padding: 22px 28px 0;
+}
+
+/* --- Source : la cible a la silhouette d'une carte mémoire ------------- */
+.carte-vide {
+  width: 100%;
+  min-height: 168px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 20px;
+  background: var(--panneau);
+  border: 1.5px solid var(--trait-fort);
+  border-radius: var(--r);
+  color: var(--texte-moyen);
+  font: inherit;
+  cursor: pointer;
+}
+.glyphe-carte { width: 58px; height: 42px; margin-bottom: 12px; }
+.glyphe-carte .silhouette { fill: none; stroke: var(--trait-fort); stroke-width: 1.6; }
+.glyphe-carte .contact { fill: var(--trait-fort); }
+.carte-vide__invite { font-size: 16px; color: var(--texte); }
+.carte-vide__second { font-size: 13px; color: var(--texte-faible); }
+.carte-vide:hover, .carte-vide:focus-visible,
+body.glisse .carte-vide {
+  border-color: var(--safelight);
+  background: #21282a;
+}
+.carte-vide:hover .silhouette,
+body.glisse .carte-vide .silhouette { stroke: var(--safelight); }
+.carte-vide:hover .contact,
+body.glisse .carte-vide .contact { fill: var(--safelight); }
+
+.carte-pleine {
+  background: var(--panneau);
+  border: 1px solid var(--trait);
+  border-left: 3px solid var(--safelight);
+  border-radius: var(--r);
+  padding: 14px 16px;
+}
+.carte-pleine__nom {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 26px;
+  line-height: 1.1;
+}
+.carte-pleine__chemin {
+  font-size: 11px;
+  color: var(--texte-faible);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.carte-pleine__faits {
+  display: flex;
+  gap: 20px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--trait);
+}
+.fait__valeur {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.fait__nom { font-size: 11px; color: var(--texte-faible); }
+
+/* --- Destinations ------------------------------------------------------ */
+.disque {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--trait);
+}
+.disque__rang {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--texte-faible);
+  text-align: center;
+}
+.disque__nom { font-weight: 500; font-size: 15px; }
+.disque__chemin {
+  font-size: 11px;
+  color: var(--texte-faible);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Jauge d'occupation : le trait ambre montre où la copie amènera le disque.
+   On voit d'un coup d'œil si la carte tient. */
+.jauge {
+  position: relative;
+  height: 4px;
+  background: #161c1e;
+  margin-top: 7px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.jauge__occupe { position: absolute; inset: 0 auto 0 0; background: #4a585e; }
+.jauge__ajout  { position: absolute; top: 0; bottom: 0; background: var(--safelight); }
+.jauge--pleine .jauge__ajout { background: var(--alerte); }
+.disque__espace { font-size: 11px; color: var(--texte-faible); margin-top: 5px; }
+.disque__espace.insuffisant { color: var(--alerte); }
+.disque__retirer {
+  background: none; border: 0; color: var(--texte-faible);
+  cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 6px;
+  border-radius: var(--r);
+}
+.disque__retirer:hover { color: var(--alerte); background: var(--panneau); }
+
+.ajouter {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; border-bottom: 1px solid var(--trait);
+  color: var(--texte-moyen); font: inherit; font-size: 14px;
+  padding: 11px 0 11px 34px; cursor: pointer;
+}
+.ajouter:hover { color: var(--safelight); }
+.ajouter:disabled { color: var(--texte-faible); cursor: default; }
+
+/* ==========================================================================
+   Barre d'action
+   ========================================================================== */
+.actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 18px 28px;
+  margin-top: 20px;
+  border-top: 1px solid var(--trait);
+  background: var(--panneau);
+}
+.reglages { display: flex; gap: 22px; align-items: center; flex: 1; flex-wrap: wrap; }
+.reglage { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--texte-moyen); cursor: pointer; }
+.reglage input { accent-color: var(--safelight); width: 14px; height: 14px; cursor: pointer; }
+/* Le rendu natif des menus déroulants ignore la couleur du texte sous
+   WebKit/GTK : on le dessine entièrement, chevron compris. */
+.reglage select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--panneau-haut);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--texte-moyen) 50%),
+    linear-gradient(135deg, var(--texte-moyen) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 53%, calc(100% - 10px) 53%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--texte);
+  border: 1px solid var(--trait-fort);
+  border-radius: var(--r);
+  padding: 6px 30px 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.reglage select:hover { border-color: var(--safelight); }
+.reglage select option { background: var(--panneau-haut); color: var(--texte); }
+
+.bouton {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 21px;
+  letter-spacing: .02em;
+  padding: 11px 34px;
+  border-radius: var(--r);
+  border: 1px solid var(--safelight);
+  background: var(--safelight);
+  color: #1a1204;
+  cursor: pointer;
+}
+.bouton:hover { background: #eeb254; border-color: #eeb254; }
+.bouton:disabled { background: none; color: var(--texte-faible); border-color: var(--trait); cursor: default; }
+.bouton--sobre {
+  background: none; color: var(--texte-moyen); border-color: var(--trait-fort);
+  font-size: 15px; padding: 9px 18px;
+}
+.bouton--sobre:hover { background: var(--panneau-haut); color: var(--texte); border-color: var(--trait-fort); }
+
+:focus-visible { outline: 2px solid var(--safelight); outline-offset: 2px; }
+
+/* ==========================================================================
+   Journal — la feuille de rapport labo : des colonnes réglées, pas des cartes
+   ========================================================================== */
+.journal {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 28px 0;
+  background: var(--fond);
+}
+.journal__entete, .ligne {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 78px var(--colonnes-dest, 90px);
+  gap: 14px;
+  align-items: center;
+}
+.journal__entete {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .06em;
+  color: var(--texte-faible);
+  padding: 13px 0 7px;
+  border-bottom: 1px solid var(--trait-fort);
+  position: sticky;
+  top: 0;
+  background: var(--fond);
+}
+.journal__corps { overflow-y: auto; flex: 1 1 auto; }
+.ligne {
+  padding: 7px 0;
+  border-bottom: 1px solid #1f2628;
+  font-size: 13px;
+}
+.ligne--echec { background: #2a1615; }
+.ligne__fichier {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.ligne--echec .ligne__fichier { color: #ff9a92; }
+.ligne__clip, .ligne__taille {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--texte-faible);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ligne__taille { text-align: right; font-variant-numeric: tabular-nums; }
+.ligne__etats { display: flex; gap: 6px; justify-content: flex-end; }
+.pastille {
+  width: 15px; height: 15px; border-radius: 2px;
+  border: 1px solid var(--trait-fort);
+  display: grid; place-items: center;
+  font-size: 10px; line-height: 1;
+  color: var(--fond);
+}
+.pastille[data-etat="attente"] { background: none; color: transparent; }
+.pastille[data-etat="ecriture"] { background: var(--safelight-sourd); border-color: var(--safelight); color: transparent; }
+.pastille[data-etat="ok"] { background: var(--conforme); border-color: var(--conforme); }
+.pastille[data-etat="echec"] { background: var(--alerte); border-color: var(--alerte); }
+.ligne__motif {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: #ff9a92;
+  padding-top: 3px;
+}
+
+.journal__vide {
+  padding: 34px 0;
+  color: var(--texte-faible);
+  font-size: 14px;
+}
+
+/* ==========================================================================
+   Pied
+   ========================================================================== */
+.pied {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 9px 28px;
+  border-top: 1px solid var(--trait);
+  background: var(--panneau);
+  font-size: 11px;
+  color: var(--texte-faible);
+}
+.pied__actions { display: flex; gap: 8px; }
+.lien {
+  background: none; border: 0; color: var(--texte-moyen);
+  font: inherit; font-size: 12px; cursor: pointer; padding: 3px 6px;
+  border-radius: var(--r);
+}
+.lien:hover { color: var(--safelight); }
+.cache { display: none !important; }
+
+/* Repères de disques en tête de journal : mêmes gabarits que les pastilles
+   des lignes, pour que l'œil relie la colonne à son disque. */
+.repere {
+  display: inline-grid;
+  place-items: center;
+  width: 15px; height: 15px;
+  margin-left: 6px;
+  border: 1px solid var(--trait-fort);
+  border-radius: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--texte-moyen);
+}

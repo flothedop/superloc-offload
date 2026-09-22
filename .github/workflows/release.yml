@@ -1,0 +1,54 @@
+name: Publier une version
+
+# Pousser une étiquette de version (git tag v0.1.0 && git push --tags)
+# construit les installeurs Mac et Windows et les attache à une
+# publication GitHub, prête à être transmise aux clients.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installeurs:
+    name: ${{ matrix.cible }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            cible: aarch64-apple-darwin
+          - os: macos-13
+            cible: x86_64-apple-darwin
+          - os: windows-latest
+            cible: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cible }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Les tests d'intégrité passent avant toute publication : on ne
+      # distribue pas un outil de vérification qui n'a pas été vérifié.
+      - name: Tests d'intégrité
+        run: cargo test -p offload-core --all-targets
+
+      - run: npm install
+      - run: npm run build -- --target ${{ matrix.cible }}
+
+      - name: Attacher les installeurs à la publication
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            target/${{ matrix.cible }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.cible }}/release/bundle/nsis/*.exe
+            target/${{ matrix.cible }}/release/bundle/msi/*.msi

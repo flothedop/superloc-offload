@@ -1,0 +1,14 @@
+{
+  "name": "superloc-offload",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Copie et vérification de rushs",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
