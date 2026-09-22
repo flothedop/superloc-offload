@@ -73,6 +73,23 @@
   <button class="bouton" id="btn-decharger" type="button" disabled>Décharger</button>
 </div>
 
+<section class="analyse cache" id="analyse" aria-live="polite">
+  <div class="analyse__entete">
+    <span class="analyse__titre">Pourquoi c'est lent</span>
+    <button class="lien" id="analyse-fermer" type="button">Masquer</button>
+  </div>
+  <div class="analyse__colonnes">
+    <div>
+      <div class="analyse__sous">Mesuré</div>
+      <ul class="analyse__liste" id="analyse-faits"></ul>
+    </div>
+    <div>
+      <div class="analyse__sous">Explications compatibles avec ces mesures — à vérifier</div>
+      <ol class="analyse__liste analyse__liste--hypo" id="analyse-hypotheses"></ol>
+    </div>
+  </div>
+</section>
+
 <main class="journal">
   <div class="journal__entete" id="journal-entete">
     <div>Fichier</div>

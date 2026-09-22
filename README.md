@@ -31,6 +31,43 @@ fichier sur chaque disque.*
 - **Espace disque contrôlé avant** de commencer, pas au milieu.
 - **Un disque qui tombe n'arrête pas les autres** : la copie continue et le
   rapport nomme la destination fautive.
+- **Chaque destination avance à son rythme** : elle écrit, force l'écriture
+  physique, relit et renomme dans son propre fil. Un disque rapide n'attend
+  plus la vérification d'un disque lent.
+
+## Débit et diagnostic de lenteur
+
+![Diagnostic de lenteur](docs/captures/07-diagnostic.png)
+
+*Débit par disque, micro-courbe, compteurs qui divergent — le disque rapide
+a vérifié 15 fichiers quand le lent en est à 5 — et l'analyse ouverte
+pendant la copie.*
+
+Pendant la copie, chaque disque affiche son débit d'écriture et une
+micro-courbe des dernières minutes : la régularité se lit à l'œil, et c'est
+déjà un diagnostic.
+
+Quand le débit décroche, l'outil ouvre un encart en deux parties strictement
+séparées :
+
+- **Mesuré** — des faits. Le principal : *où le tuyau attend*. Le moteur
+  chronomètre le temps pendant lequel la lecture de la carte a dû attendre
+  chaque disque, ce qui désigne le maillon limitant sans aucune supposition.
+  S'y ajoutent les débits, les pauses franches, le profil des fichiers et le
+  système de fichiers de chaque volume.
+- **Explications compatibles avec ces mesures — à vérifier** — des
+  hypothèses classées, jamais des conclusions, chacune accompagnée du geste
+  qui permet de trancher.
+
+L'outil ne prononce jamais une cause. Un plateau à 37 Mo/s donne « le disque
+est *peut-être* branché sur un port USB 2 — pour trancher : rebrancher sur
+un autre port et comparer », jamais « vous êtes en USB 2 ».
+
+Le diagnostic se tait tant qu'il n'a pas assez de matière : en dessous de
+vingt secondes de transfert, aucune tendance n'est calculée. Ce qui ne peut
+pas être mesuré de façon fiable n'est pas affiché — la détection
+SSD/mécanique, par exemple, est écartée parce que les bibliothèques la
+rapportent faux dès qu'il y a une couche de virtualisation.
 
 ## L'application
 
@@ -113,7 +150,9 @@ dans le rapport.
 
 | Élément | État |
 |---|---|
-| Moteur, empreintes, MHL, détection de corruption | Testés (16 tests d'intégrité) |
+| Moteur, empreintes, MHL, détection de corruption | Testés (41 tests, dont 16 d'intégrité) |
+| Découplage des destinations | Mesuré : 2,2–3,1 s → 1,6 s sur une charge de 120 fichiers vers 2 disques |
+| Diagnostic : refus de conclure sans matière | Testé (un transfert court ne produit aucune hypothèse) |
 | Empreintes xxHash64 | Recoupées avec une implémentation indépendante |
 | Branche Linux de la lecture sans cache | Testée |
 | Couche Tauri, glisser-déposer, gestion des refus | Testés de bout en bout dans l'application |

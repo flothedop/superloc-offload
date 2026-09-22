@@ -64,6 +64,8 @@ struct DestinationUi {
     conforme: bool,
     fichiers_ok: usize,
     fichiers_echec: usize,
+    debit_moyen: f64,
+    systeme_fichiers: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -75,6 +77,8 @@ struct RapportUi {
     destinations: Vec<DestinationUi>,
     avertissements: Vec<String>,
     dossier_rapport: Option<String>,
+    debit_source: f64,
+    diagnostic: offload_core::diagnostic::Diagnostic,
 }
 
 /* ------------------------------------------------------------- Détection */
@@ -212,7 +216,6 @@ async fn decharger(app: AppHandle, options: OptionsUi) -> Result<RapportUi, Stri
 
     let relais = app.clone();
     let rapport: Rapport = tauri::async_runtime::spawn_blocking(move || {
-        let mut index_courant = 0usize;
         copy::decharger(&opts, &mut |p| match p {
             Progression::Demarrage {
                 nb_fichiers,
@@ -228,45 +231,61 @@ async fn decharger(app: AppHandle, options: OptionsUi) -> Result<RapportUi, Stri
                 total,
                 chemin,
             } => {
-                index_courant = index - 1;
                 let _ = relais.emit(
                     "offload://fichier",
-                    serde_json::json!({ "index": index - 1, "total": total, "chemin": chemin }),
+                    serde_json::json!({ "index": index, "total": total, "chemin": chemin }),
                 );
             }
-            Progression::Octets { copies, total } => {
+            Progression::Octets {
+                copies,
+                total,
+                debit,
+            } => {
                 let _ = relais.emit(
                     "offload://octets",
-                    serde_json::json!({ "copies": copies, "total": total }),
+                    serde_json::json!({ "copies": copies, "total": total, "debit": debit }),
                 );
             }
-            Progression::Verification { chemin } => {
+            Progression::Debit {
+                destination,
+                debit,
+                cumul,
+                fichiers_faits,
+            } => {
                 let _ = relais.emit(
-                    "offload://verification",
-                    serde_json::json!({ "index": index_courant, "chemin": chemin }),
+                    "offload://debit",
+                    serde_json::json!({
+                        "destination": destination,
+                        "debit": debit,
+                        "cumul": cumul,
+                        "fichiers_faits": fichiers_faits
+                    }),
                 );
             }
-            Progression::Resultat {
+            Progression::Diagnostic(diag) => {
+                let _ = relais.emit("offload://diagnostic", &diag);
+            }
+            Progression::Verifie {
+                destination,
                 index,
                 chemin,
-                verifications,
-                ..
+                etat,
+                erreur,
             } => {
-                let etats: Vec<&str> = verifications
-                    .iter()
-                    .map(|v| if v.etat.ok() { "ok" } else { "echec" })
-                    .collect();
-                let motif = verifications.iter().find(|v| !v.etat.ok()).map(|v| {
+                let motif = erreur.map(|e| {
                     format!(
-                        "{} : {}",
-                        noms.get(v.destination).cloned().unwrap_or_default(),
-                        v.erreur.clone().unwrap_or_else(|| "échec".to_string())
+                        "{} : {e}",
+                        noms.get(destination).cloned().unwrap_or_default()
                     )
                 });
                 let _ = relais.emit(
                     "offload://resultat",
                     serde_json::json!({
-                        "index": index, "chemin": chemin, "etats": etats, "motif": motif
+                        "destination": destination,
+                        "index": index,
+                        "chemin": chemin,
+                        "etat": if etat.ok() { "ok" } else { "echec" },
+                        "motif": motif
                     }),
                 );
             }
@@ -316,10 +335,14 @@ async fn decharger(app: AppHandle, options: OptionsUi) -> Result<RapportUi, Stri
                 conforme: d.etat == Etat::Ok,
                 fichiers_ok: d.fichiers_ok,
                 fichiers_echec: d.fichiers_echec,
+                debit_moyen: d.profil.debit_moyen,
+                systeme_fichiers: d.volume.as_ref().map(|v| v.systeme_fichiers.clone()),
             })
             .collect(),
         avertissements: rapport.avertissements.clone(),
         dossier_rapport: cibles.first().map(|c| c.display().to_string()),
+        debit_source: rapport.profil_source.debit_moyen,
+        diagnostic: offload_core::diagnostic::depuis_rapport(&rapport),
     })
 }
 

@@ -8,13 +8,16 @@
 //! vérifié.
 
 pub mod copy;
+pub mod diagnostic;
 pub mod hash;
+pub mod mesure;
 pub mod mhl;
 pub mod preflight;
 pub mod report;
 pub mod scan;
 pub mod uncached;
 pub mod verify;
+pub mod volume;
 
 /// Taille des blocs de lecture/écriture. Multiple de 4 KiB, requis par les
 /// lectures sans cache (O_DIRECT sous Linux, NO_BUFFERING sous Windows).

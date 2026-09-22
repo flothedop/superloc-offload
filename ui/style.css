@@ -483,3 +483,118 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
   letter-spacing: 0;
   color: var(--texte-moyen);
 }
+
+/* ==========================================================================
+   Débit par destination
+   ========================================================================== */
+.disque__mesure {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 6px;
+}
+.disque__debit {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 19px;
+  font-variant-numeric: tabular-nums;
+  color: var(--texte);
+  min-width: 96px;
+}
+.disque__avancement {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--texte-faible);
+}
+/* Micro-courbe : la régularité du débit se lit d'un coup d'œil, et c'est
+   déjà un diagnostic en soi. */
+.courbe {
+  flex: 1;
+  height: 22px;
+  min-width: 60px;
+}
+.courbe polyline {
+  fill: none;
+  stroke: var(--texte-moyen);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ==========================================================================
+   Analyse de lenteur
+   Aucune couleur ici : le vert et le rouge restent réservés au verdict.
+   Ce qui compte, c'est que la frontière entre le mesuré et le supposé
+   saute aux yeux.
+   ========================================================================== */
+.analyse {
+  /* L'analyse ne prend jamais tout l'écran : le journal doit rester
+     visible, et le panneau défile s'il déborde. */
+  flex: 0 0 auto;
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 13px 28px 14px;
+  background: var(--panneau);
+  border-top: 1px solid var(--trait);
+  border-bottom: 1px solid var(--trait);
+}
+.analyse__entete {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+.analyse__titre {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 19px;
+  color: var(--texte);
+}
+.analyse__colonnes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 28px;
+}
+.analyse__sous {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: .05em;
+  color: var(--texte-faible);
+  padding-bottom: 5px;
+  margin-bottom: 9px;
+  border-bottom: 1px solid var(--trait);
+}
+.analyse__liste {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 116px;
+  overflow-y: auto;
+}
+.analyse__liste li {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--texte);
+  padding: 4px 0 4px 13px;
+  border-left: 2px solid var(--trait-fort);
+  margin-bottom: 7px;
+}
+/* Les hypothèses sont visuellement en retrait : elles ne sont pas des faits. */
+.analyse__liste--hypo li {
+  border-left-style: dashed;
+  border-left-color: var(--texte-faible);
+  color: var(--texte-moyen);
+}
+.analyse__liste--hypo .hypo__titre {
+  display: block;
+  color: var(--texte);
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.analyse__liste--hypo .hypo__test {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--texte-faible);
+}

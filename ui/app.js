@@ -14,6 +14,8 @@ const etat = {
   lignes: [],
   enCours: false,
   rapport: null,
+  // Débit, courbe et avancement de chaque destination.
+  mesures: [],
   // Un verdict affiché (vert, rouge, ou refus) reste à l'écran tant que
   // l'utilisateur n'a pas relancé une opération : c'est la seule chose
   // qu'il est venu lire, aucun rafraîchissement d'état ne doit l'effacer.
@@ -21,6 +23,14 @@ const etat = {
 };
 
 /* ------------------------------------------------------------------ Outils */
+
+function debitLisible(o) {
+  if (!o || o <= 0) return '—';
+  const mo = o / 1e6;
+  if (mo >= 1000) return `${(mo / 1000).toFixed(2)} Go/s`;
+  if (mo >= 100) return `${mo.toFixed(0)} Mo/s`;
+  return `${mo.toFixed(1)} Mo/s`;
+}
 
 function octets(n) {
   if (n === 0) return '0 o';
@@ -121,6 +131,13 @@ function majDisques() {
           <div class="jauge__ajout" style="left:${occupe}%;width:${Math.max(ajout, besoin ? 0.6 : 0)}%"></div>
         </div>
         <div class="disque__espace ${tient ? '' : 'insuffisant'}"></div>
+        <div class="disque__mesure cache" data-mesure="${i}">
+          <span class="disque__debit">—</span>
+          <svg class="courbe" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points=""></polyline>
+          </svg>
+          <span class="disque__avancement"></span>
+        </div>
       </div>
       <button class="disque__retirer" type="button" aria-label="Retirer ce disque">×</button>`;
     ligne.querySelector('.disque__nom').textContent = d.nom;
@@ -168,6 +185,73 @@ function majAction() {
   bandeauRepos();
 }
 
+function majMesure(destination, debit, fichiersFaits) {
+  const m = etat.mesures[destination] || (etat.mesures[destination] = { courbe: [], max: 0 });
+  m.debit = debit;
+  m.faits = fichiersFaits;
+  if (debit > 0) {
+    m.courbe.push(debit);
+    if (m.courbe.length > 48) m.courbe.shift();
+    m.max = Math.max(m.max, debit);
+  }
+
+  const bloc = document.querySelector(`[data-mesure="${destination}"]`);
+  if (!bloc) return;
+  bloc.classList.remove('cache');
+  bloc.querySelector('.disque__debit').textContent = debitLisible(debit);
+  const total = etat.source ? etat.source.fichiers.length : 0;
+  bloc.querySelector('.disque__avancement').textContent =
+    total ? `${fichiersFaits || 0}/${total} vérifiés` : '';
+
+  // Courbe normalisée sur le maximum vu : ce qu'on lit, c'est la régularité.
+  const pts = m.courbe;
+  if (pts.length > 1 && m.max > 0) {
+    const pas = 100 / (pts.length - 1);
+    bloc.querySelector('polyline').setAttribute(
+      'points',
+      pts.map((v, i) => `${(i * pas).toFixed(1)},${(21 - (v / m.max) * 19).toFixed(1)}`).join(' '),
+    );
+  }
+}
+
+function cacherMesures() {
+  document.querySelectorAll('[data-mesure]').forEach((b) => b.classList.add('cache'));
+}
+
+/* --------------------------------------------------- Analyse de lenteur */
+
+function afficherAnalyse(diag) {
+  if (!diag || (!diag.faits.length && !diag.hypotheses.length)) return;
+  const section = $('analyse');
+  const faits = $('analyse-faits');
+  const hypos = $('analyse-hypotheses');
+
+  faits.textContent = '';
+  diag.faits.forEach((f) => {
+    const li = document.createElement('li');
+    li.textContent = f;
+    faits.appendChild(li);
+  });
+
+  hypos.textContent = '';
+  diag.hypotheses.forEach((h) => {
+    const li = document.createElement('li');
+    const titre = document.createElement('span');
+    titre.className = 'hypo__titre';
+    titre.textContent = h.titre;
+    const parce = document.createTextNode(`parce que ${h.parce_que}`);
+    const test = document.createElement('span');
+    test.className = 'hypo__test';
+    test.textContent = `Pour trancher : ${h.verifier}`;
+    li.append(titre, parce, test);
+    hypos.appendChild(li);
+  });
+
+  section.classList.remove('cache');
+}
+
+$('analyse-fermer').addEventListener('click', () => $('analyse').classList.add('cache'));
+
 /* ------------------------------------------------------------------ Journal */
 
 function journalPreparer() {
@@ -203,11 +287,14 @@ function journalEcriture(index) {
 function journalResultat(r) {
   const l = etat.lignes[r.index];
   if (!l) return;
-  l.querySelectorAll('.pastille').forEach((p, i) => {
-    p.dataset.etat = r.etats[i];
-    p.textContent = r.etats[i] === 'ok' ? '✓' : r.etats[i] === 'echec' ? '✕' : '';
-  });
-  if (r.etats.includes('echec')) {
+  // Chaque destination remonte son propre verdict, quand elle y arrive.
+  const pastilles = l.querySelectorAll('.pastille');
+  const p = pastilles[r.destination];
+  if (p) {
+    p.dataset.etat = r.etat;
+    p.textContent = r.etat === 'ok' ? '✓' : '✕';
+  }
+  if (r.etat === 'echec') {
     l.classList.add('ligne--echec');
     // Le motif n'est écrit qu'une fois : répété à chaque ligne, il noie
     // justement l'information qu'il porte.
@@ -227,6 +314,8 @@ async function decharger(scenario) {
   etat.enCours = true;
   etat.rapport = null;
   etat.verdictAffiche = false;
+  etat.mesures = etat.disques.map(() => ({ courbe: [], max: 0 }));
+  $('analyse').classList.add('cache');
   majDisques();
   $('btn-decharger').disabled = true;
   $('btn-verifier').disabled = true;
@@ -253,25 +342,21 @@ async function decharger(scenario) {
       onOctets: (e) => {
         const pct = (e.copies / e.total) * 100;
         const ecoule = (Date.now() - debut) / 1000;
-        const debit = ecoule > 0.5 ? e.copies / ecoule : 0;
-        const restant = debit > 0 ? (e.total - e.copies) / debit : 0;
+        const moyen = ecoule > 0.5 ? e.copies / ecoule : 0;
+        const restant = moyen > 0 ? (e.total - e.copies) / moyen : 0;
         bandeau({
           etat: 'copie',
           verdict: 'Déchargement',
-          detail: debit
-            ? `${octets(debit)}/s — ${Math.ceil(restant / 60)} min restantes — ${nomCourt(dernierChemin)}`
+          detail: moyen
+            ? `carte ${debitLisible(e.debit || moyen)} — ${Math.max(1, Math.ceil(restant / 60))} min restantes — ${nomCourt(dernierChemin)}`
             : nomCourt(dernierChemin),
           pourcent: pct,
         });
       },
-      onVerif: (e) => {
-        bandeau({
-          etat: 'verif',
-          verdict: 'Vérification',
-          detail: `Relecture de ${nomCourt(e.chemin)} sur chaque disque`,
-          pourcent: null,
-        });
-      },
+      // Chaque destination remonte son propre débit : c'est elle qu'on
+      // regarde quand on se demande qui traîne.
+      onDebit: (e) => majMesure(e.destination, e.debit, e.fichiers_faits),
+      onDiagnostic: afficherAnalyse,
       onResultat: journalResultat,
     });
   } catch (e) {
@@ -314,8 +399,13 @@ function terminer(rapport) {
     });
   }
   $('pied-info').textContent = rapport.destinations
-    .map((d) => `${d.nom} — ${d.fichiers_ok}/${rapport.nb_fichiers} vérifiés`)
+    .map(
+      (d) =>
+        `${d.nom} — ${d.fichiers_ok}/${rapport.nb_fichiers} vérifiés · ${debitLisible(d.debit_moyen)}`,
+    )
     .join('   ·   ');
+  if (rapport.diagnostic) afficherAnalyse(rapport.diagnostic);
+  cacherMesures();
   // En cas d'échec, l'écran se place sur le premier fichier fautif plutôt
   // que de laisser le journal en bas de liste.
   if (!rapport.conforme && etat.premierEchec != null && etat.lignes[etat.premierEchec]) {
@@ -356,6 +446,8 @@ $('btn-recommencer').addEventListener('click', () => {
   etat.lignes = [];
   etat.premierEchec = null;
   etat.verdictAffiche = false;
+  etat.mesures = [];
+  $('analyse').classList.add('cache');
   $('journal-corps').textContent = '';
   $('journal-corps').appendChild(messageVide);
   messageVide.classList.remove('cache');
@@ -472,7 +564,8 @@ window.__demo = async (nom, vitesse) => {
   majSource(); majDisques(); journalPreparer();
   if (nom === 'pret') return;
   Backend.vitesse = vitesse || 40;
-  await decharger(nom === 'echec' ? 'echec' : undefined);
+  const scenarios = { echec: 'echec', lent: 'lent' };
+  await decharger(scenarios[nom]);
 };
 
 /* -------------------------------------------------- Glisser-déposer réel

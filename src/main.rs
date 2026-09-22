@@ -5,9 +5,11 @@
 //! aux utilisateurs avancés.
 
 use offload_core::copy::{self, Options, Progression};
+use offload_core::diagnostic::{self, debit_lisible};
 use offload_core::hash::Algo;
 use offload_core::preflight::octets_lisibles;
 use offload_core::{mhl, verify};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -123,6 +125,17 @@ fn commande_copier(args: &[String]) -> Result<bool, String> {
     };
 
     let mut dernier_pourcent = u64::MAX;
+    let mut debits: Vec<f64> = vec![0.0; cibles.len()];
+    let noms_dest: Vec<String> = cibles
+        .iter()
+        .map(|c| {
+            c.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| c.display().to_string())
+        })
+        .collect();
+
     let mut rapport = copy::decharger(&opts, &mut |p| match p {
         Progression::Demarrage {
             nb_fichiers,
@@ -138,37 +151,64 @@ fn commande_copier(args: &[String]) -> Result<bool, String> {
             total,
             chemin,
         } => {
-            println!("[{index}/{total}] {chemin}");
+            println!("\n[{}/{total}] {chemin}", index + 1);
         }
-        Progression::Octets { copies, total } => {
+        Progression::Octets {
+            copies,
+            total,
+            debit,
+        } => {
             let pct = copies
                 .checked_mul(100)
                 .and_then(|v| v.checked_div(total))
                 .unwrap_or(100);
             if pct != dernier_pourcent {
                 dernier_pourcent = pct;
-                print!("\r        {pct} %   ");
-                use std::io::Write;
+                let detail: Vec<String> = noms_dest
+                    .iter()
+                    .zip(debits.iter())
+                    .map(|(n, d)| format!("{n} {}", debit_lisible(*d)))
+                    .collect();
+                print!(
+                    "\r  {pct} %   carte {}   |   {}          ",
+                    debit_lisible(debit),
+                    detail.join("   ")
+                );
                 let _ = std::io::stdout().flush();
             }
         }
-        Progression::Verification { .. } => {
-            print!("\r        vérification…   ");
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-        }
-        Progression::Resultat {
-            ok, verifications, ..
+        Progression::Debit {
+            destination, debit, ..
         } => {
-            if ok {
-                println!("\r        ✔ vérifié          ");
+            if let Some(d) = debits.get_mut(destination) {
+                *d = debit;
+            }
+        }
+        Progression::Diagnostic(diag) => {
+            // En ligne de commande, seul le constat principal est utile en
+            // cours de route : le détail est donné dans le bilan final.
+            if let Some(premier) = diag.faits.first() {
+                println!("\n  \u{2139} {premier}");
+            }
+        }
+        Progression::Verifie {
+            destination,
+            etat,
+            erreur,
+            chemin,
+            ..
+        } => {
+            let nom = noms_dest
+                .get(destination)
+                .cloned()
+                .unwrap_or_else(|| format!("disque {}", destination + 1));
+            if etat.ok() {
+                println!("\r  \u{2714} {nom} : {chemin} vérifié                    ");
             } else {
-                let detail = verifications
-                    .iter()
-                    .find(|v| !v.etat.ok())
-                    .and_then(|v| v.erreur.clone())
-                    .unwrap_or_else(|| "cause inconnue".to_string());
-                println!("\r        ✖ ÉCHEC : {detail}");
+                println!(
+                    "\r  \u{2716} {nom} : {chemin} — {}",
+                    erreur.unwrap_or_else(|| "cause inconnue".to_string())
+                );
             }
         }
     })
@@ -226,6 +266,36 @@ fn afficher_bilan(rapport: &offload_core::report::Rapport) {
     }
     for a in &rapport.avertissements {
         println!("⚠ {a}");
+    }
+
+    let diag = diagnostic::depuis_rapport(rapport);
+    if diag.a_quelque_chose_a_dire() {
+        println!("\n── Débit ──────────────────────────────────");
+        println!(
+            "Carte : {} en moyenne",
+            debit_lisible(rapport.profil_source.debit_moyen)
+        );
+        for d in &rapport.destinations {
+            println!(
+                "{} : {} en moyenne",
+                d.dossier,
+                debit_lisible(d.profil.debit_moyen)
+            );
+        }
+        if !diag.faits.is_empty() {
+            println!("\nMesuré :");
+            for f in &diag.faits {
+                println!("  · {f}");
+            }
+        }
+        if !diag.hypotheses.is_empty() {
+            println!("\nExplications compatibles avec ces mesures (à vérifier) :");
+            for h in &diag.hypotheses {
+                println!("  · {}", h.titre);
+                println!("      parce que {}", h.parce_que);
+                println!("      pour trancher : {}", h.verifier);
+            }
+        }
     }
     println!(
         "\n{}",

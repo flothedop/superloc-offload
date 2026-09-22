@@ -4,7 +4,9 @@
 //! journal, et récapitule le résultat destination par destination.
 
 use crate::hash::Algo;
+use crate::mesure::ProfilDebit;
 use crate::uncached::Mode;
+use crate::volume::Volume;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +68,16 @@ pub struct RapportDestination {
     pub fichiers_echec: usize,
     pub octets_ecrits: u64,
     pub mhl: Option<String>,
+    /// Caractéristiques du volume : système de fichiers, amovible, réseau.
+    pub volume: Option<Volume>,
+    /// Débit d'écriture mesuré sur le temps réel.
+    pub profil: ProfilDebit,
+    pub temps_ecriture_ms: u64,
+    pub temps_sync_ms: u64,
+    pub temps_verif_ms: u64,
+    /// Temps pendant lequel la lecture de la carte a dû attendre cette
+    /// destination. C'est cette mesure qui désigne le goulot d'étranglement.
+    pub attente_lecture_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,6 +101,9 @@ pub struct Rapport {
     pub avertissements: Vec<String>,
     pub machine: String,
     pub utilisateur: String,
+    pub volume_source: Option<Volume>,
+    pub profil_source: ProfilDebit,
+    pub temps_lecture_ms: u64,
 }
 
 impl Rapport {
