@@ -76,6 +76,20 @@ pub fn correspond(motif: &str, chemin: &str) -> bool {
 }
 
 fn glob(motif: &str, nom: &str) -> bool {
+    // Caractères échappés (« \[ ») : comparaison littérale.
+    if motif.contains('\\') {
+        let mut litteral = String::new();
+        let mut echappe = false;
+        for c in motif.chars() {
+            if echappe || c != '\\' {
+                litteral.push(c);
+                echappe = false;
+            } else {
+                echappe = true;
+            }
+        }
+        return litteral == nom;
+    }
     match motif.split_once('*') {
         None => motif.eq_ignore_ascii_case(nom) || motif == nom,
         Some((avant, apres)) => {
@@ -250,7 +264,14 @@ pub fn verifier(
             .empreintes
             .iter()
             .find(|e| e.algo == algo)
-            .map(|e| e.valeur.to_ascii_lowercase())
+            // Hexadécimal insensible à la casse ; C4 (base 58) sensible.
+            .map(|e| {
+                if e.algo == Algo::C4 {
+                    e.valeur.clone()
+                } else {
+                    e.valeur.to_ascii_lowercase()
+                }
+            })
             .unwrap_or_default();
         match rehacher(&p, algo, &mut octets, annulation) {
             Ok((v, _, direct)) => {
@@ -276,7 +297,8 @@ pub fn verifier(
     }
 
     // Fichiers inattendus (hors manifestes et exclusions).
-    let connus: HashSet<&str> = attendus.keys().map(String::as_str).collect();
+    // Comparaison en NFC : HFS+ rend les noms accentués décomposés.
+    let connus: HashSet<String> = attendus.keys().map(|k| crate::noms::nfc(k)).collect();
     for e in walkdir::WalkDir::new(dossier)
         .follow_links(false)
         .sort_by_file_name()
@@ -290,7 +312,7 @@ pub fn verifier(
         let Some(rel) = inventaire::relatif(rel) else {
             continue;
         };
-        if connus.contains(rel.as_str()) || ignores.iter().any(|m| correspond(m, &rel)) {
+        if connus.contains(&crate::noms::nfc(&rel)) || ignores.iter().any(|m| correspond(m, &rel)) {
             continue;
         }
         bilan.inattendus.push(rel);
@@ -315,5 +337,6 @@ mod tests {
             "A001_2026-10-21_101010.mhl"
         ));
         assert!(!correspond(".DS_Store", "A/clip.mov"));
+        assert!(correspond(r"A\[1\]_2026.mhl", "A[1]_2026.mhl"));
     }
 }

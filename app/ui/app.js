@@ -19,6 +19,8 @@ const E = {
   volumes: [],
   tache: null,
   file: [],
+  faits: [],
+  pause: false,
   dernier: null,
   journal: { problemes: [], fichiers: new Map(), ok: 0 },
   rendu: false,
@@ -299,6 +301,7 @@ function demandeCourante() {
     commentaire: '',
     langue: LANGUE,
     ejecter: !!r.ejecter,
+    empreinte: E.source.empreinte || null,
     octets: E.source.octets,
   };
 }
@@ -324,17 +327,40 @@ function surDecharger() {
     oublierSource();
     return;
   }
+  E.faits = [];
+  E.pause = false;
   lancer(d);
 }
 
 function afficherFile() {
   const liste = $('file-liste');
   liste.textContent = '';
-  $('file').classList.toggle('cache', !E.file.length);
+  const visible = E.file.length > 0 || E.faits.length > 1 || E.pause;
+  $('file').classList.toggle('cache', !visible);
   $('file-compte').classList.toggle('cache', !E.file.length);
   $('file-compte').textContent = E.file.length ? `+${E.file.length}` : '';
+  // Cartes déjà traitées dans cette série : un échec reste visible même
+  // quand la carte suivante a réussi.
+  for (const f of E.faits) {
+    const li = el('li', `file__fait verdict-${f.verdict}`);
+    li.append(el('b', null, f.nom), document.createTextNode(` — ${texteVerdict(f.verdict)}`));
+    liste.append(li);
+  }
   for (const d of E.file) {
-    const li = el('li', null, `${d.nom} — ${octets(d.octets)} → ${d.bases.length} ${t('destinations').toLowerCase()} · ${t('attente')}`);
+    liste.append(el('li', null, `${d.nom} — ${octets(d.octets)} → ${d.bases.length} ${t('destinations').toLowerCase()} · ${t('attente')}`));
+  }
+  if (E.pause && E.file.length) {
+    const li = el('li', 'file__pause');
+    li.append(document.createTextNode(t('file_en_pause') + ' '));
+    const b = el('button', 'lien', t('reprendre_file'));
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      E.pause = false;
+      const suivante = E.file.shift();
+      afficherFile();
+      if (suivante) lancer(suivante);
+    });
+    li.append(b);
     liste.append(li);
   }
 }
@@ -388,11 +414,16 @@ async function lancer(demande) {
   $('btn-annuler').classList.add('cache');
   $('ajouter').disabled = false;
   afficherIssue(demande, issue);
+  const verdict = issue.issue === 'refus' ? 'echec' : issue.rapport.verdict;
+  E.faits.push({ nom: demande.nom, verdict });
+  // Un échec arrête la file : il doit être lu avant de passer à la suite.
+  if (verdict === 'echec' || verdict === 'annule') E.pause = true;
   majApercu();
   afficherDisques();
   afficherTuiles();
   majPret();
-  if (E.file.length) {
+  afficherFile();
+  if (E.file.length && !E.pause) {
     const suivante = E.file.shift();
     afficherFile();
     setTimeout(() => lancer(suivante), 800);
@@ -602,7 +633,7 @@ function afficherIssue(demande, issue) {
       rem.append(li);
     }
     ['btn-rapport', 'btn-dossier', 'btn-ejecter'].forEach((id) => $(id).classList.add('cache'));
-    son(false);
+    son('echec');
     return;
   }
 
@@ -624,7 +655,7 @@ function afficherIssue(demande, issue) {
   const premiere = r.destinations.find((d) => !d.erreur_fatale) || r.destinations[0];
   E.dernier.dossier = premiere ? premiere.dossier : null;
   ['btn-rapport', 'btn-dossier'].forEach((id) => $(id).classList.toggle('cache', !E.dernier.dossier));
-  $('btn-ejecter').classList.toggle('cache', r.annule);
+  $('btn-ejecter').classList.toggle('cache', r.verdict === 'echec' || r.annule);
   r.destinations.forEach((d, i) => {
     const l = $(`debit-${i}`);
     if (!l) return;
@@ -636,7 +667,7 @@ function afficherIssue(demande, issue) {
     l.querySelector('.debit__valeur').textContent = debit(d.profil && d.profil.debit_moyen);
     l.querySelector('.debit__etat').textContent = d.erreur_fatale ? t('en_panne') : `${d.fichiers_ok}/${r.nb_fichiers} ✓`;
   });
-  son(r.verdict === 'bon-a-formater' || r.verdict === 'conforme-ne-pas-formater');
+  son({ 'bon-a-formater': 'bon', 'conforme-ne-pas-formater': 'neutre' }[r.verdict] || 'echec');
   if (E.reglages.notification !== false) BACKEND.notifier(t('notif_titre'), `${demande.nom} : ${texteVerdict(r.verdict)}`);
 }
 
@@ -652,15 +683,21 @@ function nouvelleCopie() {
 }
 
 /* -------------------------------------------------------------- Son */
-function son(reussite) {
+/* Trois sons distincts : seul « bon à formater » a le son de la réussite ;
+ * « ne pas formater encore » a une note neutre ; l'échec, un signal grave. */
+function son(type) {
   if (E.reglages && E.reglages.son === false) return;
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const notes = reussite ? [[660, 0], [880, 0.16]] : [[220, 0], [220, 0.28], [220, 0.56]];
-    for (const [f, d] of notes) {
+    const notes = {
+      bon: [[660, 0, 'sine'], [880, 0.16, 'sine']],
+      neutre: [[520, 0, 'triangle']],
+      echec: [[220, 0, 'square'], [220, 0.28, 'square'], [220, 0.56, 'square']],
+    }[type] || [];
+    for (const [f, d, forme] of notes) {
       const o = ctx.createOscillator();
       const g = ctx.createGain();
-      o.type = reussite ? 'sine' : 'square';
+      o.type = forme;
       o.frequency.value = f;
       g.gain.setValueAtTime(0.0001, ctx.currentTime + d);
       g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + d + 0.02);
@@ -703,8 +740,10 @@ async function verifierUnDossier() {
       li.append(el('span', 'remarque__action', t('inattendus')));
       $('verif-liste').append(li);
     }
-    bandeau(b.conforme ? 'conforme' : 'alerte', b.conforme ? t('verif_conforme') : t('verif_non_conforme'), chemin);
-    son(b.conforme);
+    // Une vérification de dossier n'autorise pas à formater : jamais de vert
+    // plein ici, seulement le résultat écrit.
+    bandeau(b.conforme ? 'repos' : 'alerte', b.conforme ? t('verif_conforme') : t('verif_non_conforme'), chemin);
+    son(b.conforme ? 'neutre' : 'echec');
   } catch (e) {
     $('verif-resume').classList.add('verif__resume--ko');
     $('verif-resume').textContent = String(e);

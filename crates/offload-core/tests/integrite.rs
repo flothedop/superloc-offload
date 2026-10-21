@@ -75,6 +75,9 @@ fn carte(racine: &Path) -> PathBuf {
 
 fn options(source: &Path, dests: &[PathBuf]) -> Options {
     let mut o = Options::new(source, dests.to_vec());
+    // Les essais tournent sur un seul disque : la carte et les copies y
+    // partagent le même volume, ce qui est refusé en usage réel.
+    o.meme_volume_que_la_source = true;
     o.nom = "A001".into();
     o.operateur = "Test".into();
     o
@@ -189,11 +192,13 @@ fn copie_conforme_complete_vers_deux_destinations() {
 
     // Deux dossiers sur le même disque : jamais « bon à formater ».
     assert_ne!(r.verdict, Verdict::BonAFormater);
-    assert!(r
-        .remarques
-        .iter()
-        .any(|x| matches!(x, Remarque::MemeDisquePhysique { .. })
-            || matches!(x, Remarque::CachePossible { .. })));
+    assert!(r.remarques.iter().any(|x| matches!(
+        x,
+        Remarque::MemeDisquePhysique { .. }
+            | Remarque::CachePossible { .. }
+            | Remarque::SurLeDisqueDeLaCarte { .. }
+            | Remarque::DisquesNonIdentifies { .. }
+    )));
 
     assert!(ev.iter().any(|e| matches!(e, Evenement::Copie { .. })));
     assert!(ev.iter().any(|e| matches!(e, Evenement::Avancement(_))));
@@ -497,7 +502,9 @@ fn bon_a_formater_exige_deux_disques_physiques() {
     let source = carte(t.path());
     let dests = vec![t.path().join("d1/A001"), t.path().join("d2/A001")];
     let (mut r, _) = lancer(&options(&source, &dests));
-    // Simule deux disques physiques distincts et des relectures prouvées.
+    // Simule deux disques physiques distincts (et une carte sur un
+    // troisième) et des relectures prouvées.
+    r.volume_source.as_mut().unwrap().id_disque = Some("carte".into());
     for (i, d) in r.destinations.iter_mut().enumerate() {
         let v = d.volume.as_mut().unwrap();
         v.id_disque = Some(format!("disque{i}"));
@@ -525,6 +532,187 @@ fn bon_a_formater_exige_deux_disques_physiques() {
     r.fichiers[0].copies[1].niveau = Niveau::CachePossible;
     r.conclure(vec![]);
     assert_eq!(r.verdict, Verdict::ConformeNePasFormater);
+    r.fichiers[0].copies[1].niveau = Niveau::Support;
+    r.conclure(vec![]);
+    assert_eq!(r.verdict, Verdict::BonAFormater);
+
+    // Disque physique non identifié : la copie ne compte pas (revue C1).
+    r.destinations[1].volume.as_mut().unwrap().id_disque = None;
+    r.conclure(vec![]);
+    assert_eq!(r.verdict, Verdict::ConformeNePasFormater);
+    assert!(r
+        .remarques
+        .iter()
+        .any(|x| matches!(x, Remarque::DisquesNonIdentifies { .. })));
+    r.destinations[1].volume = None;
+    r.conclure(vec![]);
+    assert_eq!(r.verdict, Verdict::ConformeNePasFormater);
+
+    // Copie sur le disque de la carte : ne compte pas (revue H1).
+    r.destinations[1].volume = r.destinations[0].volume.clone();
+    r.destinations[1].volume.as_mut().unwrap().id_disque = Some("carte".into());
+    r.conclure(vec![]);
+    assert_eq!(r.verdict, Verdict::ConformeNePasFormater);
+    assert!(r
+        .remarques
+        .iter()
+        .any(|x| matches!(x, Remarque::SurLeDisqueDeLaCarte { destination: 1 })));
+
+    // Volume LVM / RAID qui partage un disque avec une autre copie.
+    r.destinations[0].volume.as_mut().unwrap().id_disque = Some("sda,sdb".into());
+    r.destinations[1].volume.as_mut().unwrap().id_disque = Some("sdb".into());
+    r.conclure(vec![]);
+    assert_eq!(r.verdict, Verdict::ConformeNePasFormater);
+}
+
+/// Revue C1/H1 en conditions réelles : sans l'autorisation des essais, une
+/// destination sur le volume de la carte est refusée, sans rien y écrire.
+#[test]
+fn destination_sur_le_volume_de_la_carte_refusee() {
+    let t = base();
+    let source = carte(t.path());
+    let avant = instantane(&source);
+    let mut o = options(&source, &[source.join("../SAUVEGARDE/X")]);
+    o.meme_volume_que_la_source = false;
+    let refus = decharger(&o, &mut |_| {}).unwrap_err();
+    assert!(refus
+        .erreurs
+        .iter()
+        .any(|e| e.code == Code::DestinationSurLaCarte));
+    assert!(!refus
+        .erreurs
+        .iter()
+        .any(|e| e.code == Code::CreationImpossible));
+    assert_eq!(instantane(&source), avant);
+    assert!(!t.path().join("SAUVEGARDE").exists());
+}
+
+#[test]
+fn carte_sans_fichier_jamais_bon_a_formater() {
+    let t = base();
+    let s = t.path().join("VIDE");
+    fs::create_dir_all(s.join("DCIM/100")).unwrap();
+    let dests = vec![t.path().join("d1/X"), t.path().join("d2/X")];
+    let (mut r, _) = lancer(&options(&s, &dests));
+    r.volume_source.as_mut().unwrap().id_disque = Some("carte".into());
+    for (i, d) in r.destinations.iter_mut().enumerate() {
+        d.volume.as_mut().unwrap().id_disque = Some(format!("k{i}"));
+    }
+    r.conclure(vec![]);
+    assert_ne!(r.verdict, Verdict::BonAFormater);
+    assert!(r.remarques.contains(&Remarque::CarteVide));
+    assert!(dests[0].join("DCIM/100").is_dir());
+}
+
+/// Revue M2 : les rapports d'un déchargement précédent présents sur la
+/// source ne sont ni copiés ni écrasés.
+#[test]
+fn rapports_precedents_de_la_source_non_copies() {
+    let t = base();
+    let s = carte(t.path());
+    fs::create_dir_all(s.join("_offload")).unwrap();
+    fs::write(s.join("_offload/rapport.json"), b"ANCIEN").unwrap();
+    let d = vec![t.path().join("d1/X")];
+    let (r, _) = lancer(&options(&s, &d));
+    assert!(!r.fichiers.iter().any(|f| f.chemin.starts_with("_offload")));
+    assert!(r.exclus.iter().any(|e| e == "_offload"));
+    let nouveau = fs::read_to_string(d[0].join("_offload/rapport.json")).unwrap();
+    assert!(nouveau.contains("\"verdict\""));
+}
+
+/// Revue M2 : un échec d'écriture du rapport rend la destination fautive
+/// et le verdict est recalculé.
+#[test]
+fn echec_decriture_du_rapport_pris_en_compte() {
+    let t = base();
+    let s = carte(t.path());
+    let d = vec![t.path().join("d1/X"), t.path().join("d2/X")];
+    let mut o = options(&s, &d);
+    // Un fichier « _offload » apparaît sur la destination 1 pendant la copie.
+    let gene = d[1].join("_offload");
+    o.fautes.apres_bloc_source = Some(Arc::new(move |rel: &str, _| {
+        if rel.ends_with(".wav") && !gene.exists() {
+            let _ = fs::write(&gene, b"bouchon");
+        }
+    }));
+    let (r, _) = lancer(&o);
+    assert_eq!(
+        r.destinations[1].erreur_fatale.as_ref().unwrap().code,
+        Code::EcritureImpossible
+    );
+    assert!(r
+        .remarques
+        .iter()
+        .any(|x| matches!(x, Remarque::DestinationEnEchec { destination: 1 })));
+    let relu: Rapport =
+        serde_json::from_str(&fs::read_to_string(d[0].join("_offload/rapport.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        relu.verdict, r.verdict,
+        "le rapport écrit porte le verdict recalculé"
+    );
+}
+
+#[test]
+fn carte_changee_depuis_la_mise_en_file() {
+    let t = base();
+    let s = carte(t.path());
+    let d = vec![t.path().join("d1/X")];
+    let mut o = options(&s, &d);
+    o.empreinte_attendue = Some("pas la bonne".into());
+    let refus = decharger(&o, &mut |_| {}).unwrap_err();
+    assert!(refus
+        .erreurs
+        .iter()
+        .any(|e| e.code == Code::CarteDifferente));
+    assert!(!d[0].exists());
+    let inv = offload_core::inventaire::inventorier(&s).unwrap();
+    o.empreinte_attendue = Some(offload_core::registre::empreinte_inventaire(&inv));
+    assert!(decharger(&o, &mut |_| {}).is_ok());
+}
+
+/// Revue : 25 annulations à des instants différents, aucun résidu, aucun
+/// fichier final qui ne soit identique à la carte.
+#[test]
+fn annulations_aleatoires_sans_residu() {
+    let t = base();
+    let c = t.path().join("CARTE");
+    fs::create_dir_all(&c).unwrap();
+    for i in 0..40usize {
+        let n = (i * 7919 % 13) * 300_000 + i;
+        fs::write(c.join(format!("f{i:03}.bin")), vec![(i % 251) as u8; n]).unwrap();
+    }
+    for essai in 0..25u64 {
+        let d = vec![
+            t.path().join(format!("a{essai}/X")),
+            t.path().join(format!("b{essai}/X")),
+        ];
+        let mut o = options(&c, &d);
+        let jeton = o.annulation.clone();
+        let seuil = (essai * 2_654_435_761) % 40;
+        let compte = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let k = compte.clone();
+        o.fautes.apres_bloc_source = Some(Arc::new(move |_: &str, _: u64| {
+            if k.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= seuil {
+                jeton.annuler();
+            }
+        }));
+        let (r, _) = lancer(&o);
+        for (i, dd) in d.iter().enumerate() {
+            assert!(residus(dd).is_empty());
+            for f in &r.fichiers {
+                let p = dd.join(&f.chemin);
+                let niveau = f.copie(i).unwrap().niveau;
+                if p.exists() {
+                    assert!(niveau > Niveau::Echec);
+                    assert_eq!(fs::read(&p).unwrap(), fs::read(c.join(&f.chemin)).unwrap());
+                } else {
+                    assert_eq!(niveau, Niveau::Echec);
+                }
+            }
+        }
+        assert_ne!(r.verdict, Verdict::BonAFormater);
+    }
 }
 
 /// Interopérabilité : l'outil de référence de l'ASC doit valider nos

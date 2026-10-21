@@ -109,6 +109,9 @@ pub struct DestinationRapport {
     /// Manifestes écrits, chemins relatifs au dossier.
     pub manifestes: Vec<String>,
     pub durabilite_degradee: bool,
+    /// Fichiers temporaires restés après la copie (suppression refusée).
+    #[serde(default)]
+    pub residus: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,7 +143,11 @@ impl Verdict {
 pub enum Remarque {
     UneSeuleCopie,
     MemeDisquePhysique { destinations: Vec<usize> },
-    DisquesNonIdentifies,
+    DisquesNonIdentifies { destinations: Vec<usize> },
+    SurLeDisqueDeLaCarte { destination: usize },
+    CarteVide,
+    ResidusTemporaires { destination: usize, nombre: usize },
+    RelectureCarteNonProuvee { fichiers: usize },
     CachePossible { destination: usize, fichiers: usize },
     ModeTaille,
     FichiersNonCopies { nombre: usize },
@@ -175,12 +182,28 @@ impl Remarque {
                     Langue::En => format!("{} are on the same physical disk: this counts as one copy only.", n.join(" and ")),
                 }
             }
-            Remarque::DisquesNonIdentifies => l
-                .t(
-                    "Le système n'a pas permis d'identifier les disques physiques : vérifiez vous-même que les copies sont sur deux disques différents.",
-                    "The system could not identify the physical disks: check yourself that the copies are on two different disks.",
-                )
+            Remarque::DisquesNonIdentifies { destinations } => {
+                let n: Vec<String> = destinations.iter().map(nom).collect();
+                match l {
+                    Langue::Fr => format!("{} : le disque physique n'a pas pu être identifié, cette copie ne compte donc pas pour autoriser le formatage.", n.join(", ")),
+                    Langue::En => format!("{}: the physical disk could not be identified, so this copy does not count towards formatting.", n.join(", ")),
+                }
+            }
+            Remarque::SurLeDisqueDeLaCarte { destination } => match l {
+                Langue::Fr => format!("{} est sur le même disque que la carte : cette copie ne compte pas.", nom(destination)),
+                Langue::En => format!("{} is on the same disk as the card: this copy does not count.", nom(destination)),
+            },
+            Remarque::CarteVide => l
+                .t("La carte ne contient aucun fichier.", "The card contains no files.")
                 .into(),
+            Remarque::ResidusTemporaires { destination, nombre } => match l {
+                Langue::Fr => format!("{} : {nombre} fichier(s) temporaire(s) « .offload-part » n'ont pas pu être supprimés ; ce ne sont pas des rushs, les effacer à la main.", nom(destination)),
+                Langue::En => format!("{}: {nombre} temporary “.offload-part” file(s) could not be deleted; they are not footage, delete them manually.", nom(destination)),
+            },
+            Remarque::RelectureCarteNonProuvee { fichiers } => match l {
+                Langue::Fr => format!("Relecture de la carte : pour {fichiers} fichier(s), le système n'a pas permis de prouver que la lecture venait de la carte et non de la mémoire."),
+                Langue::En => format!("Card re-read: for {fichiers} file(s), the system could not prove the data came from the card rather than memory."),
+            },
             Remarque::CachePossible { destination, fichiers } => match l {
                 Langue::Fr => format!("{} : {fichiers} fichier(s) identique(s), mais le système n'a pas permis de prouver que la relecture venait du disque.", nom(destination)),
                 Langue::En => format!("{}: {fichiers} file(s) identical, but the system could not prove the read-back came from the disk.", nom(destination)),
@@ -287,6 +310,9 @@ pub struct Rapport {
     pub fichiers: Vec<FichierRapport>,
     pub destinations: Vec<DestinationRapport>,
     pub annule: bool,
+    /// Relecture de la carte : fichiers dont la provenance n'est pas prouvée.
+    #[serde(default)]
+    pub relecture_carte_non_prouvee: usize,
     pub verdict: Verdict,
     pub remarques: Vec<Remarque>,
     pub profil_source: ProfilDebit,
@@ -385,29 +411,42 @@ impl Rapport {
         }
 
         // Destinations entièrement relues depuis le disque, regroupées par
-        // disque physique.
+        // disque physique. Ne comptent que celles dont le disque physique est
+        // IDENTIFIÉ et distinct de celui de la carte : ce qui n'est pas
+        // prouvé ne compte pas.
+        let disque_source = self
+            .volume_source
+            .as_ref()
+            .and_then(|v| v.id_disque.clone());
         let bonnes: Vec<usize> = (0..n).filter(|d| niveaux[*d] == Niveau::Support).collect();
-        let mut groupes: Vec<(String, Vec<usize>)> = Vec::new();
-        let mut non_identifie = false;
+        let mut groupes: Vec<(Vec<String>, Vec<usize>)> = Vec::new();
+        let mut non_identifies = Vec::new();
         for d in &bonnes {
-            let v = self.destinations[*d].volume.as_ref();
-            let cle = match (
-                v.and_then(|v| v.id_disque.clone()),
-                v.and_then(|v| v.id_volume.clone()),
-            ) {
-                (Some(disque), _) => format!("disque:{disque}"),
-                (None, Some(vol)) => {
-                    non_identifie = true;
-                    format!("volume:{vol}")
-                }
-                (None, None) => {
-                    non_identifie = true;
-                    format!("destination:{d}")
-                }
+            let Some(disque) = self.destinations[*d]
+                .volume
+                .as_ref()
+                .and_then(|v| v.id_disque.clone())
+            else {
+                non_identifies.push(*d);
+                continue;
             };
-            match groupes.iter_mut().find(|(c, _)| *c == cle) {
-                Some((_, membres)) => membres.push(*d),
-                None => groupes.push((cle, vec![*d])),
+            if disque_source
+                .as_deref()
+                .map(|s| crate::volume::disques_communs(s, &disque))
+                .unwrap_or(false)
+            {
+                r.push(Remarque::SurLeDisqueDeLaCarte { destination: *d });
+                continue;
+            }
+            match groupes.iter_mut().find(|(ids, _)| {
+                ids.iter()
+                    .any(|x| crate::volume::disques_communs(x, &disque))
+            }) {
+                Some((ids, membres)) => {
+                    ids.push(disque);
+                    membres.push(*d);
+                }
+                None => groupes.push((vec![disque], vec![*d])),
             }
         }
         for (_, membres) in &groupes {
@@ -417,12 +456,30 @@ impl Rapport {
                 });
             }
         }
+        if !non_identifies.is_empty() {
+            r.push(Remarque::DisquesNonIdentifies {
+                destinations: non_identifies,
+            });
+        }
         let disques_distincts = groupes.len();
         if disques_distincts < 2 && !self.annule && self.mode != ModeVerif::Taille {
             r.push(Remarque::UneSeuleCopie);
         }
-        if disques_distincts >= 2 && non_identifie {
-            r.push(Remarque::DisquesNonIdentifies);
+        if self.nb_fichiers == 0 {
+            r.push(Remarque::CarteVide);
+        }
+        for (d, x) in self.destinations.iter().enumerate() {
+            if x.residus > 0 {
+                r.push(Remarque::ResidusTemporaires {
+                    destination: d,
+                    nombre: x.residus,
+                });
+            }
+        }
+        if self.relecture_carte_non_prouvee > 0 {
+            r.push(Remarque::RelectureCarteNonProuvee {
+                fichiers: self.relecture_carte_non_prouvee,
+            });
         }
 
         if !segments_manquants.is_empty() {
@@ -453,6 +510,7 @@ impl Rapport {
         let bloquant = self.mode == ModeVerif::Taille
             || !self.illisibles.is_empty()
             || differentes > 0
+            || self.nb_fichiers == 0
             || disques_distincts < 2;
 
         self.verdict = if self.annule {

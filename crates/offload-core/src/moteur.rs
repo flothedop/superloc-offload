@@ -81,6 +81,12 @@ pub struct Options {
     pub langue: Langue,
     pub annulation: Annulation,
     pub fautes: Plan,
+    /// Empreinte de la carte quand elle a été préparée (file d'attente) :
+    /// refus si la carte présente n'est plus la même.
+    pub empreinte_attendue: Option<String>,
+    /// Essais seulement : autorise une destination sur le volume de la carte.
+    #[doc(hidden)]
+    pub meme_volume_que_la_source: bool,
 }
 
 impl Options {
@@ -105,6 +111,8 @@ impl Options {
             langue: Langue::Fr,
             annulation: Annulation::default(),
             fautes: Plan::default(),
+            empreinte_attendue: None,
+            meme_volume_que_la_source: false,
         }
     }
 }
@@ -215,6 +223,16 @@ impl Promesse {
 
     fn verrou(&self) -> std::sync::MutexGuard<'_, EtatPromesse> {
         self.etat.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Empreintes complètes, sans attendre (les fils d'empreinte ont fini).
+    fn actuelles(&self) -> Option<Vec<Empreinte>> {
+        let e = self.verrou();
+        (e.erreur.is_none() && e.empreintes.len() >= self.attendues).then(|| {
+            let mut v = e.empreintes.clone();
+            v.sort_by_key(|x| x.algo);
+            v
+        })
     }
 
     fn fournir_lecture(&self, r: Result<u64, Erreur>) {
@@ -357,6 +375,8 @@ struct Bilan {
     temps_verif_ms: u64,
     manifestes: Vec<String>,
     durabilite_degradee: bool,
+    /// Vrai si CE déchargement a créé le dossier : sinon on n'y écrit rien.
+    racine_creee: bool,
 }
 
 struct Contexte {
@@ -373,6 +393,9 @@ struct Contexte {
     fautes: Plan,
     compteurs: Arc<Compteurs>,
     retour: Sender<Retour>,
+    /// Système de fichiers et caractère distant de la destination : ils
+    /// bornent le niveau de preuve atteignable.
+    volume: Option<Volume>,
 }
 
 struct EnCours {
@@ -507,13 +530,66 @@ fn verifier_copie(
             ),
         ));
     }
-    let prouve = mode.garantit_le_support() || residence.map(|r| r.hors_cache()).unwrap_or(false);
+    let hors_cache = residence.map(|r| r.hors_cache()).unwrap_or(false);
+    let prouve = support_prouvable(ctx.volume.as_ref())
+        && if cfg!(target_os = "linux") {
+            // O_DIRECT ET mesure : certains systèmes de fichiers retombent
+            // en lecture tamponnée sans le dire.
+            mode == sanscache::Mode::Direct && hors_cache
+        } else if cfg!(windows) {
+            mode.garantit_le_support()
+        } else {
+            hors_cache
+        };
     let niveau = if prouve {
         Niveau::Support
     } else {
         Niveau::CachePossible
     };
     Ok((niveau, Some(mode), residence))
+}
+
+/// Échappe les caractères spéciaux d'un motif gitignore.
+fn echapper_motif(nom: &str) -> String {
+    let mut s = String::new();
+    for c in nom.chars() {
+        if matches!(c, '[' | ']' | '*' | '?' | '!' | '#' | '\\') {
+            s.push('\\');
+        }
+        s.push(c);
+    }
+    s
+}
+
+/// Systèmes de fichiers sur lesquels la relecture peut être prouvée. Ailleurs
+/// (réseau, FUSE, ZFS, inconnu), un cache que l'outil ne voit pas peut
+/// répondre à la place du disque : le niveau reste « cache possible ».
+fn support_prouvable(v: Option<&Volume>) -> bool {
+    let Some(v) = v else { return false };
+    if v.reseau {
+        return false;
+    }
+    let f = v.systeme_fichiers.to_ascii_lowercase();
+    if cfg!(target_os = "macos") {
+        // exFAT et FAT passent par FSKit depuis macOS 26 : comportement du
+        // cache non vérifié, donc non prouvé.
+        f == "apfs" || f == "hfs" || ((f == "exfat" || f == "msdos") && macos_avant_26())
+    } else if cfg!(windows) {
+        ["ntfs", "exfat", "fat32", "fat", "refs"].contains(&f.as_str())
+    } else {
+        [
+            "ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat", "f2fs",
+        ]
+        .contains(&f.as_str())
+    }
+}
+
+#[allow(dead_code)]
+fn macos_avant_26() -> bool {
+    sysinfo::System::os_version()
+        .and_then(|v| v.split('.').next().and_then(|m| m.parse::<u32>().ok()))
+        .map(|m| m < 26)
+        .unwrap_or(false)
 }
 
 fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
@@ -554,6 +630,8 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
             Code::CreationImpossible
         };
         marquer_panne(&mut bilan, Erreur::io(code, ctx.racine.display(), &e));
+    } else {
+        bilan.racine_creee = true;
     }
 
     let envoyer_copie = |index: usize, chemin: Arc<str>, copie: Copie| {
@@ -702,13 +780,7 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
                             Err(x) => Err(x),
                             Ok((niveau, lecture, residence)) => {
                                 match es::avec_patience(|| {
-                                    if e.final_.exists() {
-                                        return Err(io::Error::new(
-                                            io::ErrorKind::AlreadyExists,
-                                            "le fichier définitif existe déjà",
-                                        ));
-                                    }
-                                    fs::rename(&e.temp, &e.final_)
+                                    es::renommer_sans_ecraser(&e.temp, &e.final_)
                                 }) {
                                     Err(x) => Err(Erreur::io(
                                         Code::RenommageImpossible,
@@ -777,7 +849,7 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
         );
     }
 
-    if ctx.racine.is_dir() {
+    if bilan.racine_creee && ctx.racine.is_dir() {
         // Dates des dossiers, les plus profonds d'abord (créer un fichier
         // modifie la date de son dossier).
         let mut dossiers: Vec<&inventaire::DossierCarte> = ctx.dossiers.iter().collect();
@@ -808,7 +880,7 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
         let mut motifs = inventaire::motifs_exclusion();
         motifs.push(format!("{DOSSIER_RAPPORT}/"));
         if ctx.mhl_v1 && mhl1::possible(&ctx.algos) {
-            motifs.push(mhl1::nom_fichier(&feuille, &ctx.debut));
+            motifs.push(echapper_motif(&mhl1::nom_fichier(&feuille, &ctx.debut)));
         }
         match ascmhl::ecrire(
             &ctx.racine,
@@ -946,7 +1018,7 @@ fn lire_fichier(
 ) -> Result<u64, Erreur> {
     let chemin = joindre(&opts.source, relatif);
     let avant = fs::metadata(&chemin).map_err(|e| Erreur::io(Code::LectureSource, relatif, &e))?;
-    let mut f = File::open(&chemin).map_err(|e| Erreur::io(Code::LectureSource, relatif, &e))?;
+    let mut f = ouvrir_carte(&chemin).map_err(|e| Erreur::io(Code::LectureSource, relatif, &e))?;
     let mut lus = 0u64;
 
     loop {
@@ -1022,7 +1094,10 @@ fn lire_fichier(
 
     // La carte a-t-elle bougé pendant la lecture ?
     let apres = fs::metadata(&chemin).map_err(|e| Erreur::io(Code::LectureSource, relatif, &e))?;
-    let change = avant.len() != apres.len() || avant.modified().ok() != apres.modified().ok();
+    // Volume Codex HDE : 0 octet annoncé avant lecture, taille réelle après.
+    let codex = avant.len() == 0 && apres.len() == lus;
+    let change =
+        (avant.len() != apres.len() && !codex) || avant.modified().ok() != apres.modified().ok();
     if change {
         return Err(Erreur::new(
             Code::SourceModifiee,
@@ -1033,7 +1108,35 @@ fn lire_fichier(
             ),
         ));
     }
+    // Moins (ou plus) d'octets que le système n'en annonce : lecture
+    // tronquée par un pilote, un lecteur ou un partage réseau défaillant.
+    if avant.len() > 0 && lus != avant.len() {
+        return Err(Erreur::new(
+            Code::LectureSource,
+            format!(
+                "{relatif} : {lus} octets lus, {} annoncés par le système",
+                avant.len()
+            ),
+        ));
+    }
     Ok(lus)
+}
+
+/// Ouvre un fichier de la carte en lecture seule ; sous Linux, sans mettre à
+/// jour sa date d'accès quand c'est permis.
+fn ouvrir_carte(chemin: &Path) -> io::Result<File> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Ok(f) = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOATIME)
+            .open(chemin)
+        {
+            return Ok(f);
+        }
+    }
+    File::open(chemin)
 }
 
 fn imputer(
@@ -1071,8 +1174,23 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
     rappel(Evenement::Phase {
         phase: Phase::Controle,
     });
-    let controle = controle::controler(&inv, &opts.source, &opts.destinations)
-        .map_err(|erreurs| Refus { erreurs })?;
+    if let Some(attendue) = &opts.empreinte_attendue {
+        if crate::registre::empreinte_inventaire(&inv) != *attendue {
+            return Err(Refus {
+                erreurs: vec![Erreur::new(
+                    Code::CarteDifferente,
+                    opts.source.display().to_string(),
+                )],
+            });
+        }
+    }
+    let controle = controle::controler(
+        &inv,
+        &opts.source,
+        &opts.destinations,
+        opts.meme_volume_que_la_source,
+    )
+    .map_err(|erreurs| Refus { erreurs })?;
 
     let volume_source = volume::du_chemin(&opts.source);
     let noms = crate::rapport::noms_affiches(&opts.destinations, &controle.volumes);
@@ -1147,6 +1265,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
                 infos_mhl1: (opts.nom.clone(), utilisateur.clone(), machine.clone()),
                 annulation: opts.annulation.clone(),
                 fautes: opts.fautes.clone(),
+                volume: controle.volumes[i].clone(),
                 compteurs: Arc::clone(&compteurs),
                 retour: tx_retour.clone(),
             };
@@ -1376,7 +1495,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
     }
     // Empreintes de la carte, pour le rapport (les fils d'empreinte ont fini).
     for (index, p) in promesses.drain(..) {
-        if let Ok((_, e)) = p.attendre(&Annulation::default()) {
+        if let Some(e) = p.actuelles() {
             etat.fichiers[index].empreintes = e;
         }
     }
@@ -1451,6 +1570,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
     }
 
     // Relecture de la carte.
+    let mut non_prouvees = 0usize;
     if opts.mode == ModeVerif::CompletCarte && !annule {
         (etat.rappel)(Evenement::Phase {
             phase: Phase::RelectureCarte,
@@ -1467,16 +1587,21 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
             }
             let chemin = etat.fichiers[i].chemin.clone();
             let attendu = etat.fichiers[i].empreinte(algo).map(str::to_string);
+            let taille = etat.fichiers[i].taille;
             let r = relire_carte(
                 &joindre(&opts.source, &chemin),
+                taille,
                 algo,
                 &mut relus,
                 &opts.annulation,
             );
-            let identique = match (r, attendu) {
-                (Ok(v), Some(a)) => v == a && !opts.fautes.source_instable(&chemin),
+            let identique = match (&r, attendu) {
+                (Ok((v, _)), Some(a)) => *v == a && !opts.fautes.source_instable(&chemin),
                 _ => false,
             };
+            if matches!(r, Ok((_, false))) {
+                non_prouvees += 1;
+            }
             etat.fichiers[i].relecture_carte = Some(identique);
             if !identique {
                 etat.noter(format!("RELECTURE CARTE DIFFÉRENTE  {chemin}"));
@@ -1534,6 +1659,19 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
                 attente_imputee_ms: destinations[i].attente.ms(),
                 manifestes: b.manifestes.clone(),
                 durabilite_degradee: b.durabilite_degradee,
+                residus: if b.racine_creee {
+                    // Dernière tentative de nettoyage ; ce qui résiste est
+                    // signalé (un antivirus peut garder un fichier verrouillé).
+                    residus(dossier)
+                        .into_iter()
+                        .filter(|p| {
+                            effacer(p);
+                            p.exists()
+                        })
+                        .count()
+                } else {
+                    0
+                },
             }
         })
         .collect();
@@ -1564,6 +1702,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
         fichiers: std::mem::take(&mut etat.fichiers),
         destinations: rapport_destinations,
         annule,
+        relecture_carte_non_prouvee: non_prouvees,
         verdict: Verdict::Echec,
         remarques: Vec::new(),
         profil_source: debit_source.bilan(),
@@ -1585,33 +1724,61 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
         etat.noter(format!("Remarque : {}", r.texte(Langue::Fr, &noms)));
     }
 
-    // Rapports sur chaque destination encore accessible.
-    let json = rapport.json();
-    let html = rapport_html::rendre(&rapport, opts.langue);
+    // Rapports, seulement dans les dossiers créés par CE déchargement, et
+    // sans jamais remplacer un fichier existant. Si l'écriture échoue sur un
+    // disque, ce disque est déclaré en échec, le verdict recalculé et les
+    // rapports déjà écrits (les nôtres) réécrits avec le verdict juste.
     let journal = etat.journal.join("\n") + "\n";
-    for (i, d) in opts.destinations.iter().enumerate() {
-        if !d.is_dir() {
-            continue;
+    let eligibles: Vec<usize> = (0..opts.destinations.len())
+        .filter(|i| bilans[*i].racine_creee && opts.destinations[*i].is_dir())
+        .collect();
+    let ecrire = |i: usize, json: &str, html: &str, premiere: bool| -> io::Result<()> {
+        let dossier = opts.destinations[i].join(DOSSIER_RAPPORT);
+        if premiere {
+            fs::create_dir(&dossier)?;
         }
-        let dossier = d.join(DOSSIER_RAPPORT);
-        let ecrit = (|| -> io::Result<()> {
-            fs::create_dir_all(&dossier)?;
-            for (nom, contenu) in [
-                ("rapport.json", json.as_bytes()),
-                ("rapport.html", html.as_bytes()),
-                ("journal.log", journal.as_bytes()),
-            ] {
-                let mut f = File::create(dossier.join(nom))?;
-                f.write_all(contenu)?;
-                es::synchroniser(&f)?;
+        for (nom, contenu) in [
+            ("rapport.json", json.as_bytes()),
+            ("rapport.html", html.as_bytes()),
+            ("journal.log", journal.as_bytes()),
+        ] {
+            let p = dossier.join(nom);
+            let mut f = if premiere {
+                es::creer_exclusif(&p)?
+            } else {
+                File::create(&p)?
+            };
+            f.write_all(contenu)?;
+            es::synchroniser(&f)?;
+        }
+        Ok(())
+    };
+    let mut json = rapport.json();
+    let mut html = rapport_html::rendre(&rapport, opts.langue);
+    let mut ecrits = Vec::new();
+    let mut echecs = false;
+    for &i in &eligibles {
+        match ecrire(i, &json, &html, true) {
+            Ok(()) => ecrits.push(i),
+            Err(e) => {
+                echecs = true;
+                let x = Erreur::io(
+                    Code::EcritureImpossible,
+                    opts.destinations[i].join(DOSSIER_RAPPORT).display(),
+                    &e,
+                );
+                if rapport.destinations[i].erreur_fatale.is_none() {
+                    rapport.destinations[i].erreur_fatale = Some(x);
+                }
             }
-            Ok(())
-        })();
-        if let Err(e) = ecrit {
-            let x = Erreur::io(Code::EcritureImpossible, dossier.display(), &e);
-            if rapport.destinations[i].erreur_fatale.is_none() {
-                rapport.destinations[i].erreur_fatale = Some(x);
-            }
+        }
+    }
+    if echecs {
+        rapport.conclure(inv.segments_manquants());
+        json = rapport.json();
+        html = rapport_html::rendre(&rapport, opts.langue);
+        for &i in &ecrits {
+            let _ = ecrire(i, &json, &html, false);
         }
     }
 
@@ -1621,14 +1788,22 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
     Ok(rapport)
 }
 
+/// Relit un fichier de la carte. Renvoie l'empreinte et si la lecture est
+/// prouvée venir de la carte (les pages lues lors de la copie ont été
+/// chassées du cache avant : sur macOS, `F_NOCACHE` seul ne suffit pas).
+/// L'éviction ne fait que jeter des pages propres : rien n'est écrit.
 fn relire_carte(
     chemin: &Path,
+    taille: u64,
     algo: Algo,
     relus: &mut u64,
     annulation: &Annulation,
-) -> Result<String, Erreur> {
-    let mut l = sanscache::ouvrir(chemin, BLOC)
+) -> Result<(String, bool), Erreur> {
+    let residence = es::evincer(chemin).ok();
+    let mut l = sanscache::ouvrir_taille(chemin, BLOC, taille)
         .map_err(|e| Erreur::io(Code::LectureSource, chemin.display(), &e))?;
+    let prouve =
+        l.mode().garantit_le_support() || residence.map(|r| r.hors_cache()).unwrap_or(false);
     let mut h = Hacheur::new(algo);
     loop {
         if annulation.demandee() {
@@ -1643,7 +1818,7 @@ fn relire_carte(
         *relus += b.len() as u64;
         h.update(b);
     }
-    Ok(h.finir())
+    Ok((h.finir(), prouve))
 }
 
 #[allow(clippy::too_many_arguments)]

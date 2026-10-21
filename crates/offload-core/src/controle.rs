@@ -75,10 +75,14 @@ fn inscriptible(dossier: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// `meme_volume_permis` n'existe que pour les essais (tout sur un seul
+/// disque) : en usage réel, une destination sur le volume de la carte est
+/// refusée.
 pub fn controler(
     inv: &Inventaire,
     source: &Path,
     destinations: &[PathBuf],
+    meme_volume_permis: bool,
 ) -> Result<Controle, Vec<Erreur>> {
     let mut erreurs = Vec::new();
     if destinations.is_empty() {
@@ -91,8 +95,21 @@ pub fn controler(
     let source_abs = absolu(source);
     let absolus: Vec<PathBuf> = destinations.iter().map(|d| absolu(d)).collect();
     let mut volumes = Vec::new();
+    let id_source = volume::identite(source).0;
 
     for (i, (d, abs)) in destinations.iter().zip(&absolus).enumerate() {
+        // Une destination dans la carte ou sur son volume : refusée, et
+        // rien n'y est tenté (pas même la sonde d'écriture).
+        let base = parent_existant(d);
+        let id_dest = base.as_deref().and_then(|b| volume::identite(b).0);
+        let sur_la_carte = est_dans(abs, &source_abs)
+            || (!meme_volume_permis && id_source.is_some() && id_dest == id_source);
+        if sur_la_carte && !est_dans(abs, &source_abs) {
+            erreurs.push(Erreur::new(
+                Code::DestinationSurLaCarte,
+                d.display().to_string(),
+            ));
+        }
         if d.exists() {
             erreurs.push(Erreur::new(
                 Code::DestinationExiste,
@@ -120,10 +137,9 @@ pub fn controler(
                 d.display().to_string(),
             ));
         }
-        let base = parent_existant(d);
         let vol = base.as_deref().and_then(volume::du_chemin);
         if let Some(b) = &base {
-            if !d.exists() {
+            if !d.exists() && !sur_la_carte {
                 if let Err(e) = inscriptible(b) {
                     erreurs.push(Erreur::io(
                         Code::CreationImpossible,
@@ -240,6 +256,39 @@ mod tests {
     use super::*;
     use crate::inventaire::{inventorier, FichierCarte};
 
+    /// Essais : tout est sur le même disque.
+    fn ctl(inv: &Inventaire, s: &Path, d: &[PathBuf]) -> Result<Controle, Vec<Erreur>> {
+        controler(inv, s, d, true)
+    }
+
+    #[test]
+    fn destination_sur_le_volume_de_la_carte_refusee_sans_sonde() {
+        let (d, inv) = inv_simple();
+        let e = controler(
+            &inv,
+            &d.path().join("carte"),
+            &[d.path().join("ailleurs")],
+            false,
+        )
+        .unwrap_err();
+        assert!(e.iter().any(|e| e.code == Code::DestinationSurLaCarte));
+        assert!(!e.iter().any(|e| e.code == Code::CreationImpossible));
+        // Dans la carte : aucune sonde n'y est écrite.
+        let e = controler(
+            &inv,
+            &d.path().join("carte"),
+            &[d.path().join("carte/x")],
+            true,
+        )
+        .unwrap_err();
+        assert!(e.iter().any(|e| e.code == Code::DestinationDansSource));
+        assert!(!e.iter().any(|e| e.code == Code::CreationImpossible));
+        assert_eq!(
+            std::fs::read_dir(d.path().join("carte")).unwrap().count(),
+            1
+        );
+    }
+
     fn inv_simple() -> (tempfile::TempDir, Inventaire) {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("carte")).unwrap();
@@ -252,14 +301,14 @@ mod tests {
     fn destination_existante_refusee() {
         let (d, inv) = inv_simple();
         std::fs::create_dir(d.path().join("dest")).unwrap();
-        let e = controler(&inv, &d.path().join("carte"), &[d.path().join("dest")]).unwrap_err();
+        let e = ctl(&inv, &d.path().join("carte"), &[d.path().join("dest")]).unwrap_err();
         assert!(e.iter().any(|e| e.code == Code::DestinationExiste));
     }
 
     #[test]
     fn destination_dans_la_carte_refusee() {
         let (d, inv) = inv_simple();
-        let e = controler(
+        let e = ctl(
             &inv,
             &d.path().join("carte"),
             &[d.path().join("carte/copie")],
@@ -272,7 +321,7 @@ mod tests {
     fn deux_fois_la_meme_destination_refusee() {
         let (d, inv) = inv_simple();
         let x = d.path().join("x");
-        let e = controler(&inv, &d.path().join("carte"), &[x.clone(), x]).unwrap_err();
+        let e = ctl(&inv, &d.path().join("carte"), &[x.clone(), x]).unwrap_err();
         assert!(e.iter().any(|e| e.code == Code::DestinationsIdentiques));
     }
 
@@ -280,14 +329,14 @@ mod tests {
     fn espace_insuffisant_refuse() {
         let (d, mut inv) = inv_simple();
         inv.octets_annonces = u64::MAX / 4;
-        let e = controler(&inv, &d.path().join("carte"), &[d.path().join("x")]).unwrap_err();
+        let e = ctl(&inv, &d.path().join("carte"), &[d.path().join("x")]).unwrap_err();
         assert!(e.iter().any(|e| e.code == Code::EspaceInsuffisant));
     }
 
     #[test]
     fn destination_valide_acceptee() {
         let (d, inv) = inv_simple();
-        let c = controler(
+        let c = ctl(
             &inv,
             &d.path().join("carte"),
             &[d.path().join("a"), d.path().join("b")],
@@ -309,7 +358,7 @@ mod tests {
                 clip: nom.into(),
             });
         }
-        let e = controler(&inv, &d.path().join("carte"), &[d.path().join("x")]).unwrap_err();
+        let e = ctl(&inv, &d.path().join("carte"), &[d.path().join("x")]).unwrap_err();
         assert!(e.iter().any(|e| e.code == Code::CollisionNoms));
     }
 

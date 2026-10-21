@@ -296,6 +296,86 @@ mod unix {
     }
 }
 
+/// Renomme sans jamais remplacer un fichier existant : l'opération échoue
+/// si la cible existe, de façon atomique (pas de « vérifier puis
+/// renommer », qui laisse une fenêtre).
+pub fn renommer_sans_ecraser(de: &Path, vers: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let a = std::ffi::CString::new(de.as_os_str().as_bytes())?;
+        let b = std::ffi::CString::new(vers.as_os_str().as_bytes())?;
+        // SÛRETÉ : chaînes C valides, descripteurs AT_FDCWD.
+        let r = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if r == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        // Système de fichiers qui ne connaît pas RENAME_NOREPLACE (exFAT,
+        // FUSE anciens) : repli contrôlé.
+        if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS)) {
+            return renommer_si_absent(de, vers);
+        }
+        Err(e)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let a = std::ffi::CString::new(de.as_os_str().as_bytes())?;
+        let b = std::ffi::CString::new(vers.as_os_str().as_bytes())?;
+        // SÛRETÉ : chaînes C valides.
+        if unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_EXCL) } == 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if matches!(e.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
+            return renommer_si_absent(de, vers);
+        }
+        Err(e)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+        let large = |p: &Path| -> Vec<u16> {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        };
+        let (a, b) = (large(de), large(vers));
+        // Sans MOVEFILE_REPLACE_EXISTING : échoue si la cible existe.
+        // SÛRETÉ : chaînes larges terminées par 0.
+        if unsafe { MoveFileExW(a.as_ptr(), b.as_ptr(), MOVEFILE_WRITE_THROUGH) } != 0 {
+            return Ok(());
+        }
+        Err(io::Error::last_os_error())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        renommer_si_absent(de, vers)
+    }
+}
+
+#[allow(dead_code)]
+fn renommer_si_absent(de: &Path, vers: &Path) -> io::Result<()> {
+    if vers.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "le fichier définitif existe déjà",
+        ));
+    }
+    std::fs::rename(de, vers)
+}
+
 /// Sous Windows, un antivirus ou l'indexation ouvre souvent un fichier juste
 /// après son écriture et le verrouille un instant : renommage et suppression
 /// échouent alors avec « accès refusé » ou « fichier utilisé ». On réessaie
@@ -338,6 +418,19 @@ mod tests {
         let p = d.path().join("a");
         creer_exclusif(&p).unwrap();
         assert!(creer_exclusif(&p).is_err());
+    }
+
+    #[test]
+    fn le_renommage_nn_ecrase_jamais() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        std::fs::write(&a, b"nouveau").unwrap();
+        std::fs::write(&b, b"existant").unwrap();
+        assert!(renommer_sans_ecraser(&a, &b).is_err());
+        assert_eq!(std::fs::read(&b).unwrap(), b"existant");
+        std::fs::remove_file(&b).unwrap();
+        renommer_sans_ecraser(&a, &b).unwrap();
+        assert_eq!(std::fs::read(&b).unwrap(), b"nouveau");
     }
 
     #[test]

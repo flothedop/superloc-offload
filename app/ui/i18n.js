@@ -69,6 +69,7 @@ const TEXTES = {
     niveau_support: 'relu depuis le disque', niveau_cache: 'identique, relecture peut-être servie par le cache', niveau_taille: 'taille seule', niveau_echec: 'échec',
     notif_titre: 'SuperLoc Offload',
     preparer_suivante: 'Préparer la carte suivante', masquer_preparation: 'Replier',
+    file_en_pause: 'File en pause après un échec.', reprendre_file: 'Reprendre la file',
   },
   en: {
     pret: 'Ready to offload',
@@ -136,6 +137,7 @@ const TEXTES = {
     niveau_support: 'read back from disk', niveau_cache: 'identical, read-back may have come from cache', niveau_taille: 'size only', niveau_echec: 'failed',
     notif_titre: 'SuperLoc Offload',
     preparer_suivante: 'Prepare the next card', masquer_preparation: 'Collapse',
+    file_en_pause: 'Queue paused after a failure.', reprendre_file: 'Resume queue',
   },
 };
 

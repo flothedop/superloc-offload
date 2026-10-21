@@ -192,6 +192,9 @@ struct Source {
     illisibles: Vec<String>,
     segments_manquants: Vec<String>,
     deja: Vec<registre::Entree>,
+    /// Empreinte de la liste des fichiers : le moteur refuse de copier si la
+    /// carte présente au lancement n'est plus celle-ci.
+    empreinte: String,
 }
 
 #[tauri::command]
@@ -218,6 +221,7 @@ async fn analyser_source(app: AppHandle, chemin: String) -> Result<Source, Strin
                 .collect(),
             segments_manquants: inv.segments_manquants(),
             deja: registre.chercher(&empreinte),
+            empreinte,
             chemin,
         })
     })
@@ -300,6 +304,8 @@ struct Demande {
     commentaire: String,
     langue: String,
     ejecter: bool,
+    #[serde(default)]
+    empreinte: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -381,14 +387,22 @@ async fn decharger(
         o.commentaire = demande.commentaire.clone();
         o.langue = l;
         o.annulation = jeton;
+        o.empreinte_attendue = demande.empreinte.clone();
         let r = moteur::decharger(&o, &mut |e: Evenement| {
             let _ = relais.emit("offload://evenement", enrichir(&e, l));
         });
         match r {
             Ok(rapport) => {
                 let _ = registre.ajouter(&rapport);
-                let ejection =
-                    (demande.ejecter && !rapport.annule).then(|| ejecter_volume(&source));
+                // La carte n'est éjectée que si la copie s'est bien passée :
+                // en cas d'échec, on la laisse en place pour recommencer.
+                let ejection = (demande.ejecter
+                    && matches!(
+                        rapport.verdict,
+                        offload_core::rapport::Verdict::BonAFormater
+                            | offload_core::rapport::Verdict::ConformeNePasFormater
+                    ))
+                .then(|| ejecter_volume(&source));
                 let noms = rapport.noms_destinations();
                 let remarques = rapport
                     .remarques

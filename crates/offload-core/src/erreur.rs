@@ -42,6 +42,8 @@ pub enum Code {
     NomInvalide,
     CollisionNoms,
     AucuneDestination,
+    DestinationSurLaCarte,
+    CarteDifferente,
     // Vérification d'un dossier
     Manquant,
     Inattendu,
@@ -188,6 +190,14 @@ pub fn titre(code: Code, l: Langue) -> &'static str {
             "Two files would get the same name on the destination",
         ),
         AucuneDestination => l.t("Aucune destination choisie", "No destination selected"),
+        DestinationSurLaCarte => l.t(
+            "La destination est sur le même volume que la carte",
+            "The destination is on the same volume as the card",
+        ),
+        CarteDifferente => l.t(
+            "Ce n'est plus la carte qui avait été préparée",
+            "This is no longer the card that was prepared",
+        ),
         Manquant => l.t("Fichier manquant", "Missing file"),
         Inattendu => l.t(
             "Fichier absent du manifeste",
@@ -259,6 +269,14 @@ pub fn action(code: Code, l: Langue) -> &'static str {
         ),
         DestinationDansSource | SourceDansDestination | DestinationsIdentiques
         | AucuneDestination => l.t("Choisir une autre destination.", "Choose another destination."),
+        DestinationSurLaCarte => l.t(
+            "Choisir un dossier sur un autre disque : une copie sur la carte disparaîtrait avec elle au formatage.",
+            "Choose a folder on another disk: a copy on the card would be lost when it is formatted.",
+        ),
+        CarteDifferente => l.t(
+            "La carte a été changée dans le lecteur depuis sa mise en file : la choisir à nouveau.",
+            "The card in the reader changed since it was queued: select it again.",
+        ),
         FichierTropGrosFat32 => l.t(
             "Utiliser un disque formaté en exFAT, APFS ou NTFS.",
             "Use a disk formatted as exFAT, APFS or NTFS.",

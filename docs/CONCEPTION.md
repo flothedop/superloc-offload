@@ -74,7 +74,7 @@ Chaque fichier, sur chaque destination, reçoit un niveau :
 
 | Niveau | Signification | Voyant |
 |---|---|---|
-| `support` | Relu depuis le disque, cache contourné et absence de pages en cache mesurée (macOS) ou garantie par le système (Linux `O_DIRECT`, Windows `NO_BUFFERING`). Empreinte identique. | vert |
+| `support` | Relu depuis le disque, sur un système de fichiers où c'est démontrable, empreinte identique. Linux : `O_DIRECT` **et** absence de pages en cache mesurée. macOS : absence de pages mesurée. Windows : `NO_BUFFERING`. Systèmes admis : APFS, HFS+ (et exFAT/FAT avant macOS 26, qui les fait passer par FSKit, non vérifié) ; NTFS, exFAT, FAT, ReFS ; ext2-4, XFS, Btrfs, vfat, exFAT, F2FS. Jamais sur un volume réseau, FUSE ou ZFS. | vert |
 | `cache-possible` | Empreinte identique, mais le système n'a pas permis de prouver que la relecture venait du disque. | orange |
 | `taille` | Mode rapide : taille seule comparée. | orange, « ne pas formater » |
 | `echec` | Empreinte différente, fichier illisible, écriture refusée… | rouge |
@@ -88,6 +88,14 @@ propose « Vérifier un dossier » après rebranchement.
 - **BON À FORMATER** : tous les fichiers sont au niveau `support` sur **au moins
   deux destinations situées sur deux disques physiques différents**, en mode de
   vérification complet, sans annulation, et sans avertissement bloquant.
+  Précisions issues de la relecture indépendante :
+  - ne compte qu'une destination dont le disque physique est **identifié**
+    (Linux : partition → disque, LVM/LUKS/RAID → disques sous-jacents ;
+    macOS : magasins physiques du conteneur APFS via `diskutil` ; Windows :
+    numéro de disque physique) ; ce qui n'est pas identifié ne compte pas ;
+  - ne compte pas une destination sur le même disque que la carte (et une
+    destination sur le **volume** de la carte est refusée d'emblée) ;
+  - une carte sans aucun fichier n'est jamais « bonne à formater ».
 - **COPIE CONFORME — NE PAS FORMATER ENCORE** : tout est vérifié mais une seule
   copie (ou deux copies sur le même disque physique), ou niveau `cache-possible`.
 - **ÉCHEC** : au moins un fichier en échec sur au moins une destination, avec la

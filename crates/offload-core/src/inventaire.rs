@@ -20,6 +20,8 @@ use walkdir::WalkDir;
 /// Entrées déposées par les systèmes d'exploitation, jamais par une caméra.
 /// `ascmhl` : historique ASC MHL d'une copie précédente, écarté comme le fait
 /// l'outil de référence de l'ASC (il entrerait en conflit avec le nôtre).
+/// `_offload` : rapports d'un déchargement précédent de cet outil (ils
+/// seraient remplacés par les nouveaux).
 pub const EXCLUSIONS: &[&str] = &[
     ".DS_Store",
     ".Spotlight-V100",
@@ -33,6 +35,7 @@ pub const EXCLUSIONS: &[&str] = &[
     "$RECYCLE.BIN",
     "System Volume Information",
     "ascmhl",
+    "_offload",
 ];
 
 pub fn est_exclu(nom: &str) -> bool {
@@ -41,7 +44,11 @@ pub fn est_exclu(nom: &str) -> bool {
 
 /// Motifs d'exclusion, au format gitignore du manifeste ASC MHL.
 pub fn motifs_exclusion() -> Vec<String> {
-    let mut m: Vec<String> = EXCLUSIONS.iter().map(|s| s.to_string()).collect();
+    let mut m: Vec<String> = EXCLUSIONS
+        .iter()
+        .filter(|s| **s != "_offload")
+        .map(|s| s.to_string())
+        .collect();
     m.push("ascmhl/".into());
     m.push("._*".into());
     m
@@ -268,6 +275,13 @@ pub fn inventorier(racine: &Path) -> Result<Inventaire, Erreur> {
                 cree: date(meta.created()),
                 chemin: relatif,
             });
+        } else {
+            // Tube, socket, périphérique : jamais sur une carte caméra. Non
+            // copié, et signalé (la carte ne peut pas être déclarée sauvée).
+            inv.illisibles.push(Erreur::new(
+                Code::LectureSource,
+                format!("{relatif} : fichier spécial non copié"),
+            ));
         }
     }
     Ok(inv)

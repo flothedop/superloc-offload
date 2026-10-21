@@ -764,3 +764,7 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
 .resume__texte { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .resume__texte b { color: var(--texte); font-weight: 600; }
 .vue.compacte .debits { margin-top: 0; }
+
+.file__fait { margin-bottom: 3px; }
+.file__fait b { color: var(--texte); font-weight: 600; margin-right: 2px; }
+.file__pause { list-style: none; margin-top: 6px; color: var(--texte); }

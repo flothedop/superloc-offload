@@ -79,7 +79,7 @@ fn depuis_disque(d: &sysinfo::Disk) -> Volume {
     Volume {
         nom: nom_du_volume(&point, &d.name().to_string_lossy()),
         point_montage: point.display().to_string(),
-        reseau: est_reseau(&systeme, &point),
+        reseau: est_reseau(&systeme, &point) || imp::distant(&point),
         systeme_fichiers: systeme,
         amovible: d.is_removable(),
         total: d.total_space(),
@@ -106,6 +106,7 @@ pub fn du_chemin(chemin: &Path) -> Option<Volume> {
     let ident = identite(&absolu);
     v.id_volume = ident.0.or(v.id_volume);
     v.id_disque = ident.1.or(v.id_disque);
+    v.reseau |= imp::distant(&absolu);
     Some(v)
 }
 
@@ -136,10 +137,53 @@ pub fn identite(chemin: &Path) -> (Option<String>, Option<String>) {
     imp::identite(chemin)
 }
 
+/// Vrai si deux identifiants de disque désignent au moins un disque
+/// physique commun. Un identifiant peut en lister plusieurs (« sda,sdb »
+/// pour un volume LVM ou RAID).
+pub fn disques_communs(a: &str, b: &str) -> bool {
+    let x: Vec<&str> = a.split(',').collect();
+    b.split(',').any(|d| x.contains(&d))
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn joindre_disques(mut v: Vec<String>) -> Option<String> {
+    v.sort();
+    v.dedup();
+    (!v.is_empty()).then(|| v.join(","))
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::os::unix::fs::MetadataExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    /// Disques entiers sous un périphérique bloc : une partition renvoie à
+    /// son disque ; un volume dm (LVM, LUKS) ou md (RAID) renvoie aux disques
+    /// de ses « esclaves ».
+    fn disques_sous(p: &Path, profondeur: u8, sortie: &mut Vec<String>) {
+        if profondeur > 8 {
+            return;
+        }
+        let esclaves: Vec<PathBuf> = std::fs::read_dir(p.join("slaves"))
+            .map(|it| it.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        if !esclaves.is_empty() {
+            for e in esclaves {
+                if let Ok(c) = std::fs::canonicalize(&e) {
+                    disques_sous(&c, profondeur + 1, sortie);
+                }
+            }
+            return;
+        }
+        let disque = if p.join("partition").exists() {
+            p.parent().and_then(|x| x.file_name())
+        } else {
+            p.file_name()
+        };
+        if let Some(n) = disque {
+            sortie.push(n.to_string_lossy().to_string());
+        }
+    }
 
     pub fn identite(chemin: &Path) -> (Option<String>, Option<String>) {
         let Ok(m) = std::fs::metadata(chemin) else {
@@ -148,24 +192,27 @@ mod imp {
         let dev = m.dev();
         let (maj, min) = (libc::major(dev), libc::minor(dev));
         let volume = Some(format!("{maj}:{min}"));
-        // /sys/dev/block/M:m pointe vers la partition ; son parent est le
-        // disque entier quand il s'agit d'une partition.
-        let lien = format!("/sys/dev/block/{maj}:{min}");
-        let disque = std::fs::canonicalize(&lien).ok().and_then(|p| {
-            if p.join("partition").exists() {
-                p.parent()
-                    .and_then(|x| x.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-            } else {
-                p.file_name().map(|n| n.to_string_lossy().to_string())
-            }
-        });
-        (volume, disque)
+        // Majeur 0 : périphérique anonyme (btrfs, tmpfs, overlay, FUSE) —
+        // impossible de remonter au disque physique.
+        if maj == 0 {
+            return (volume, None);
+        }
+        let Ok(p) = std::fs::canonicalize(format!("/sys/dev/block/{maj}:{min}")) else {
+            return (volume, None);
+        };
+        let mut disques = Vec::new();
+        disques_sous(&p, 0, &mut disques);
+        (volume, super::joindre_disques(disques))
+    }
+
+    pub fn distant(_: &Path) -> bool {
+        false
     }
 }
 
 #[cfg(target_os = "macos")]
 mod imp {
+    use crate::xml;
     use std::ffi::CStr;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
@@ -187,23 +234,75 @@ mod imp {
         let source = unsafe { CStr::from_ptr(s.f_mntfromname.as_ptr()) }
             .to_string_lossy()
             .to_string();
-        (volume, disque_entier(&source))
+        let Some(noeud) = source.strip_prefix("/dev/") else {
+            return (volume, None);
+        };
+        (volume, disques_physiques(noeud))
     }
 
-    /// `/dev/disk4s2` → `disk4`. Les volumes APFS d'un même conteneur ont le
-    /// même disque, ce qui est le résultat voulu : un seul disque physique.
-    pub fn disque_entier(source: &str) -> Option<String> {
-        let nom = source.strip_prefix("/dev/")?;
-        let nom = nom.strip_prefix('r').unwrap_or(nom);
-        if !nom.starts_with("disk") {
+    /// Disques physiques qui portent un volume, d'après `diskutil` : pour
+    /// APFS, les « magasins physiques » du conteneur (un conteneur APFS est
+    /// un disque synthétique, pas un disque physique) ; sinon le disque
+    /// parent.
+    fn disques_physiques(noeud: &str) -> Option<String> {
+        let sortie = std::process::Command::new("/usr/sbin/diskutil")
+            .args(["info", "-plist", noeud])
+            .output()
+            .ok()?;
+        if !sortie.status.success() {
             return None;
         }
-        let reste = &nom[4..];
+        analyser_plist(&String::from_utf8_lossy(&sortie.stdout))
+    }
+
+    pub fn analyser_plist(texte: &str) -> Option<String> {
+        let racine = xml::lire(texte).ok()?;
+        let dict = racine.enfant("dict")?;
+        let valeur = |cle: &str| -> Option<&xml::Noeud> {
+            let i = dict
+                .enfants
+                .iter()
+                .position(|e| e.nom == "key" && e.texte.trim() == cle)?;
+            dict.enfants.get(i + 1)
+        };
+        let mut disques = Vec::new();
+        if let Some(tableau) = valeur("APFSPhysicalStores") {
+            for d in tableau.enfants("dict") {
+                for (i, e) in d.enfants.iter().enumerate() {
+                    if e.nom == "key" && e.texte.trim() == "APFSPhysicalStore" {
+                        if let Some(x) = d
+                            .enfants
+                            .get(i + 1)
+                            .and_then(|v| disque_entier(v.texte.trim()))
+                        {
+                            disques.push(x);
+                        }
+                    }
+                }
+            }
+        }
+        if disques.is_empty() {
+            if let Some(p) = valeur("ParentWholeDisk").and_then(|v| disque_entier(v.texte.trim())) {
+                disques.push(p);
+            }
+        }
+        super::joindre_disques(disques)
+    }
+
+    /// `disk4s2` ou `/dev/disk4s2` → `disk4`.
+    pub fn disque_entier(source: &str) -> Option<String> {
+        let nom = source.strip_prefix("/dev/").unwrap_or(source);
+        let nom = nom.strip_prefix('r').unwrap_or(nom);
+        let reste = nom.strip_prefix("disk")?;
         let chiffres: String = reste.chars().take_while(|c| c.is_ascii_digit()).collect();
         if chiffres.is_empty() {
             return None;
         }
         Some(format!("disk{chiffres}"))
+    }
+
+    pub fn distant(_: &Path) -> bool {
+        false
     }
 }
 
@@ -213,8 +312,8 @@ mod imp {
     use std::path::Path;
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetVolumeInformationW, GetVolumePathNameW, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        CreateFileW, GetDriveTypeW, GetVolumeInformationW, GetVolumePathNameW, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Ioctl::{
         IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
@@ -223,6 +322,20 @@ mod imp {
 
     fn large(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// Lecteur réseau monté sous une lettre (le système de fichiers y est
+    /// souvent annoncé « NTFS »).
+    pub fn distant(chemin: &Path) -> bool {
+        const DRIVE_REMOTE: u32 = 4;
+        let c = large(chemin.as_os_str());
+        let mut racine = vec![0u16; 1024];
+        // SÛRETÉ : tampons dimensionnés, chaînes terminées par 0.
+        if unsafe { GetVolumePathNameW(c.as_ptr(), racine.as_mut_ptr(), racine.len() as u32) } == 0
+        {
+            return false;
+        }
+        unsafe { GetDriveTypeW(racine.as_ptr()) == DRIVE_REMOTE }
     }
 
     pub fn identite(chemin: &Path) -> (Option<String>, Option<String>) {
@@ -306,6 +419,9 @@ mod imp {
     pub fn identite(_: &std::path::Path) -> (Option<String>, Option<String>) {
         (None, None)
     }
+    pub fn distant(_: &std::path::Path) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -346,11 +462,44 @@ mod tests {
         assert!(v.id_volume.is_some(), "identifiant de volume attendu");
     }
 
+    #[test]
+    fn disques_communs_entre_identifiants() {
+        assert!(disques_communs("sda", "sda"));
+        assert!(disques_communs("sda,sdb", "sdb"));
+        assert!(!disques_communs("sda", "sdb"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn disque_entier_macos() {
         assert_eq!(imp::disque_entier("/dev/disk4s2").as_deref(), Some("disk4"));
-        assert_eq!(imp::disque_entier("/dev/disk12").as_deref(), Some("disk12"));
+        assert_eq!(imp::disque_entier("disk12").as_deref(), Some("disk12"));
         assert_eq!(imp::disque_entier("map auto_home"), None);
+    }
+
+    /// Un conteneur APFS (disk5) est synthétique : c'est son magasin
+    /// physique (disk4s2, donc disk4) qui identifie le disque.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_diskutil_apfs() {
+        let p = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>APFSContainerReference</key><string>disk5</string>
+<key>APFSPhysicalStores</key><array><dict><key>APFSPhysicalStore</key><string>disk4s2</string></dict></array>
+<key>ParentWholeDisk</key><string>disk5</string>
+</dict></plist>"#;
+        assert_eq!(imp::analyser_plist(p).as_deref(), Some("disk4"));
+        let q = r#"<plist version="1.0"><dict><key>ParentWholeDisk</key><string>disk6</string></dict></plist>"#;
+        assert_eq!(imp::analyser_plist(q).as_deref(), Some("disk6"));
+    }
+
+    #[test]
+    fn le_disque_du_dossier_courant_est_identifie_ou_absent() {
+        // Sur un vrai disque, l'identifiant ne doit jamais être vide.
+        let (_, d) = identite(Path::new("."));
+        if let Some(d) = d {
+            assert!(!d.is_empty());
+        }
     }
 }

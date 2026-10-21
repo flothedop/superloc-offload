@@ -46,7 +46,7 @@ pub fn regles_windows(systeme: &str) -> bool {
 const RESERVES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
-    "LPT9", "LPT¹", "LPT²", "LPT³",
+    "LPT9", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$",
 ];
 
 /// Raison pour laquelle Windows (NTFS, FAT, exFAT) refuserait ce composant
@@ -124,6 +124,7 @@ mod tests {
         assert!(refus_windows("a\u{1}b").is_some());
         assert!(refus_windows("A001_C003_0921XY_001.R3D").is_none());
         assert!(refus_windows("CONSOLE.txt").is_none());
+        assert!(refus_windows("CONIN$").is_some());
     }
 
     #[test]
