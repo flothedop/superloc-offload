@@ -1,40 +1,15 @@
 [workspace]
-members = ["src-tauri"]
+resolver = "2"
+members = ["crates/offload-core", "crates/offload-cli", "app/src-tauri"]
 
-[package]
-name = "offload-core"
-version = "0.1.0"
+[workspace.package]
+version = "0.2.0"
 edition = "2021"
-
-[lib]
-name = "offload_core"
-path = "src/lib.rs"
-
-[[bin]]
-name = "offload"
-path = "src/main.rs"
-
-[dependencies]
-xxhash-rust = { version = "0.8", features = ["xxh64"] }
-md-5 = "0.10"
-walkdir = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = "0.4"
-crossbeam-channel = "0.5"
-fs4 = "0.13"
-whoami = "1"
-quick-xml = "0.42.0"
-sysinfo = "0.39.6"
-dunce = "1.0.5"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[dev-dependencies]
-serde_json = "1"
-tempfile = "3"
+license = "MIT"
+authors = ["SuperLoc"]
+rust-version = "1.85"
 
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1

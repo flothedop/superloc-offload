@@ -1,0 +1,18 @@
+[package]
+name = "offload-cli"
+description = "SuperLoc Offload en ligne de commande"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "offload"
+path = "src/main.rs"
+
+[dependencies]
+offload-core = { path = "../offload-core" }
+serde_json = "1"
+chrono = "0.4"
+keepawake = "0.6"

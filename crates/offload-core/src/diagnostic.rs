@@ -7,7 +7,7 @@
 //! droit de se tromper avec assurance.
 
 use crate::mesure::ProfilDebit;
-use crate::report::Rapport;
+use crate::rapport::Rapport;
 use crate::volume::Volume;
 use serde::{Deserialize, Serialize};
 
@@ -303,7 +303,7 @@ pub fn analyser(entree: &Entree) -> Diagnostic {
 }
 
 fn octets_lisibles(n: u64) -> String {
-    crate::preflight::octets_lisibles(n)
+    crate::langue::octets(n, crate::langue::Langue::Fr)
 }
 
 /// Construit le diagnostic à partir d'un rapport terminé.
@@ -319,7 +319,7 @@ pub fn depuis_rapport(rapport: &Rapport) -> Diagnostic {
             nom: nom_court(&d.dossier),
             profil: &d.profil,
             volume: d.volume.as_ref(),
-            attente_lecture_ms: d.attente_lecture_ms,
+            attente_lecture_ms: d.attente_imputee_ms,
             temps_verif_ms: d.temps_verif_ms,
         })
         .collect();
@@ -335,7 +335,7 @@ pub fn depuis_rapport(rapport: &Rapport) -> Diagnostic {
         destinations,
         nb_fichiers: rapport.nb_fichiers,
         taille_mediane: mediane,
-        octets_total: rapport.octets_total,
+        octets_total: rapport.octets,
     })
 }
 

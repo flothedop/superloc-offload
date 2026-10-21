@@ -1,6 +1,6 @@
 [package]
 name = "superloc-offload"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Copie et vérification de rushs"
 authors = ["SuperLoc"]
@@ -14,7 +14,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-offload-core = { path = ".." }
+offload-core = { path = "../../crates/offload-core" }
 fs4 = "0.13"
 chrono = "0.4"
 

@@ -1,28 +1,27 @@
-//! Lecture qui contourne le cache du système.
+//! Relecture qui contourne le cache du système.
 //!
-//! C'est le point critique de la vérification. Juste après une copie, le
-//! système d'exploitation garde les données en mémoire vive : une relecture
-//! ordinaire relit la RAM, pas le disque, et validerait une écriture
-//! pourtant corrompue. On force donc la lecture à descendre jusqu'au
-//! support :
+//! Juste après une copie, le système garde les données en mémoire vive : une
+//! relecture ordinaire relirait la RAM et validerait une écriture pourtant
+//! corrompue sur le disque.
 //!
-//! - Linux   : `O_DIRECT` (repli : `posix_fadvise(DONTNEED)`)
-//! - macOS   : `fcntl(F_NOCACHE)`
-//! - Windows : `FILE_FLAG_NO_BUFFERING`
+//! - Linux : `O_DIRECT`. Le noyau écrit puis invalide les pages en cache
+//!   avant toute lecture directe : la lecture vient du support.
+//! - Windows : `FILE_FLAG_NO_BUFFERING`, lecture non mise en cache.
+//! - macOS : `F_NOCACHE` ne suffit PAS. Le noyau (XNU, `cluster_read_direct`)
+//!   sert d'abord les pages déjà présentes en cache. La preuve vient donc de
+//!   la mesure faite avant la relecture (`es::evincer`) : si aucune page du
+//!   fichier n'est en cache, la lecture vient forcément du support.
 //!
-//! Le mode réellement obtenu est remonté dans le rapport : si le système a
-//! refusé le contournement, la vérification est dégradée et l'utilisateur
-//! doit le savoir plutôt que de voir un voyant vert trompeur.
+//! Le mode obtenu est consigné ; c'est le moteur qui en déduit le niveau de
+//! vérification, en le combinant avec la mesure de résidence.
 
-use std::alloc::{alloc, dealloc, Layout};
+use crate::tampon::TamponAligne;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-/// Alignement exigé par les lectures sans cache (taille de secteur).
-pub const ALIGN: usize = 4096;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Mode {
     /// Linux `O_DIRECT` : le cache est entièrement court-circuité.
     Direct,
@@ -37,57 +36,10 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Vrai si la lecture a réellement atteint le support.
-    pub fn fiable(self) -> bool {
-        !matches!(self, Mode::Bufferise)
-    }
-
-    pub fn libelle(self) -> &'static str {
-        match self {
-            Mode::Direct => "lecture directe (O_DIRECT)",
-            Mode::NoCache => "lecture sans cache (F_NOCACHE)",
-            Mode::NoBuffering => "lecture sans tampon (NO_BUFFERING)",
-            Mode::FadviseDontNeed => "cache invalidé avant lecture (fadvise)",
-            Mode::Bufferise => "LECTURE MISE EN CACHE — vérification dégradée",
-        }
-    }
-}
-
-/// Tampon aligné en mémoire, nécessaire aux lectures directes.
-struct TamponAligne {
-    ptr: *mut u8,
-    taille: usize,
-}
-
-// Le pointeur n'est manipulé que par le propriétaire du tampon.
-unsafe impl Send for TamponAligne {}
-
-impl TamponAligne {
-    fn new(taille: usize) -> io::Result<Self> {
-        let taille = taille.next_multiple_of(ALIGN);
-        let layout = Layout::from_size_align(taille, ALIGN)
-            .map_err(|e| io::Error::other(format!("tampon invalide : {e}")))?;
-        // SÛRETÉ : layout a une taille non nulle ; le pointeur est vérifié.
-        let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() {
-            return Err(io::Error::other("allocation du tampon impossible"));
-        }
-        Ok(TamponAligne { ptr, taille })
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SÛRETÉ : ptr est valide et alloué pour `taille` octets.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.taille) }
-    }
-}
-
-impl Drop for TamponAligne {
-    fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            let layout = Layout::from_size_align(self.taille, ALIGN).expect("layout déjà validé");
-            // SÛRETÉ : même layout que lors de l'allocation.
-            unsafe { dealloc(self.ptr, layout) }
-        }
+    /// Vrai si le système garantit, à lui seul, que la lecture vient du
+    /// support. Sinon, seule la mesure de résidence en cache peut le prouver.
+    pub fn garantit_le_support(self) -> bool {
+        matches!(self, Mode::Direct | Mode::NoBuffering)
     }
 }
 
@@ -114,7 +66,7 @@ impl LecteurSansCache {
         if self.lus >= self.taille {
             return Ok(&[]);
         }
-        let n = self.fichier.read(self.tampon.as_mut_slice())?;
+        let n = self.fichier.read(self.tampon.zone())?;
         if n == 0 {
             // Fin de fichier prématurée : le fichier est plus court qu'annoncé.
             return Err(io::Error::new(
@@ -134,7 +86,7 @@ impl LecteurSansCache {
         } else {
             n
         };
-        Ok(&self.tampon.as_mut_slice()[..utile])
+        Ok(&self.tampon.zone()[..utile])
     }
 }
 
