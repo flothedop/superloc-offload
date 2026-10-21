@@ -43,6 +43,22 @@ impl Mode {
     }
 }
 
+/// Ouvre un fichier pour le relire sans cache, sur toute sa taille actuelle.
+pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache> {
+    let taille = std::fs::metadata(chemin)?.len();
+    ouvrir_interne(chemin, taille_bloc, taille)
+}
+
+/// Idem, en lisant `taille` octets : sert à relire une carte dont le
+/// système annonce une taille fausse (volumes Codex HDE, qui affichent 0).
+pub fn ouvrir_taille(
+    chemin: &Path,
+    taille_bloc: usize,
+    taille: u64,
+) -> io::Result<LecteurSansCache> {
+    ouvrir_interne(chemin, taille_bloc, taille)
+}
+
 /// Lecteur séquentiel qui ne passe pas par le cache du système.
 pub struct LecteurSansCache {
     fichier: File,
@@ -91,10 +107,9 @@ impl LecteurSansCache {
 }
 
 #[cfg(target_os = "linux")]
-pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache> {
+fn ouvrir_interne(chemin: &Path, taille_bloc: usize, taille: u64) -> io::Result<LecteurSansCache> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    let taille = std::fs::metadata(chemin)?.len();
     let tampon = TamponAligne::new(taille_bloc)?;
 
     // O_DIRECT n'est pas accepté par tous les systèmes de fichiers
@@ -138,10 +153,9 @@ fn invalider_cache(fichier: &File) -> Mode {
 }
 
 #[cfg(target_os = "macos")]
-pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache> {
+fn ouvrir_interne(chemin: &Path, taille_bloc: usize, taille: u64) -> io::Result<LecteurSansCache> {
     use std::os::unix::io::AsRawFd;
 
-    let taille = std::fs::metadata(chemin)?.len();
     let tampon = TamponAligne::new(taille_bloc)?;
     let fichier = File::open(chemin)?;
 
@@ -170,13 +184,12 @@ pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache>
 }
 
 #[cfg(target_os = "windows")]
-pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache> {
+fn ouvrir_interne(chemin: &Path, taille_bloc: usize, taille: u64) -> io::Result<LecteurSansCache> {
     use std::os::windows::fs::OpenOptionsExt;
 
     const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
     const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 
-    let taille = std::fs::metadata(chemin)?.len();
     let tampon = TamponAligne::new(taille_bloc)?;
 
     match std::fs::OpenOptions::new()
@@ -208,8 +221,7 @@ pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache>
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub fn ouvrir(chemin: &Path, taille_bloc: usize) -> io::Result<LecteurSansCache> {
-    let taille = std::fs::metadata(chemin)?.len();
+fn ouvrir_interne(chemin: &Path, taille_bloc: usize, taille: u64) -> io::Result<LecteurSansCache> {
     Ok(LecteurSansCache {
         fichier: File::open(chemin)?,
         tampon: TamponAligne::new(taille_bloc)?,

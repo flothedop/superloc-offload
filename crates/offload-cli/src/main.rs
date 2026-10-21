@@ -315,7 +315,12 @@ fn verifier(mut args: Args, l: Langue) -> ExitCode {
     let j = jeton.clone();
     let _ = ctrlc::set_handler(move || j.annuler());
     let _eveil = eveil();
+    let mut dernier = std::time::Instant::now() - std::time::Duration::from_secs(1);
     let b = match verification::verifier(&dossier, &jeton, &mut |p| {
+        if dernier.elapsed() < std::time::Duration::from_millis(200) {
+            return;
+        }
+        dernier = std::time::Instant::now();
         eprint!(
             "\r{}/{}  {}            ",
             p.index + 1,
