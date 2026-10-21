@@ -10,7 +10,7 @@ référence de l'ASC) et écrit ses propres expériences.
 
 | Gravité | Constat | Correction |
 |---|---|---|
-| Critique | Deux destinations dont le disque physique n'était pas identifié comptaient comme deux disques ; sur macOS, un conteneur APFS (disque synthétique) était pris pour le disque physique. | Ne compte qu'un disque **identifié** ; macOS lit les magasins physiques APFS (`diskutil`) ; Linux remonte LVM/LUKS/RAID ; les volumes anonymes (Btrfs, FUSE) ne sont pas identifiés. Tests ajoutés. |
+| Critique | Deux destinations dont le disque physique n'était pas identifié comptaient comme deux disques ; sur macOS, un conteneur APFS (disque synthétique) était pris pour le disque physique. | Ne compte qu'un disque **identifié** ; macOS lit les magasins physiques APFS (`diskutil`) ; Linux remonte LVM/LUKS/RAID ; les volumes anonymes (Btrfs, FUSE) ne sont pas identifiés. Ajouté ensuite : une image disque montée (.dmg, .sparsebundle, VHD, périphérique loop) ou un espace de stockage Windows n'est jamais pris pour un disque physique. Tests ajoutés. |
 | Élevée | Une destination sur la carte, hors du dossier source, était acceptée et comptée. | Refus de toute destination sur le volume de la carte ; une copie sur le disque de la carte ne compte jamais. |
 | Élevée | Dans la file d'attente, l'échec d'une carte disparaissait derrière la réussite de la suivante. | La file s'arrête sur un échec ; la liste des cartes traitées garde chaque verdict. |
 | Moyenne | La sonde d'écriture du contrôle préalable pouvait écrire dans la carte. | Aucune sonde sur une destination refusée. |
@@ -26,7 +26,5 @@ référence de l'ASC) et écrit ses propres expériences.
 - Un disque qui ne répond plus du tout (montage réseau bloqué, disque
   arraché pendant un appel système) peut bloquer la fin de la copie : le
   système ne rend pas la main. L'annulation n'y peut rien.
-- Windows Storage Spaces : deux espaces partageant les mêmes disques
-  seraient comptés comme deux disques.
 - Le comportement réel sur macOS (mesure de résidence) et Windows n'est
   vérifié que par l'intégration continue, et sur un vrai déchargement.

@@ -157,6 +157,8 @@ mod imp {
     use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
 
+    const VIRTUEL: &str = "\u{0}virtuel";
+
     /// Disques entiers sous un périphérique bloc : une partition renvoie à
     /// son disque ; un volume dm (LVM, LUKS) ou md (RAID) renvoie aux disques
     /// de ses « esclaves ».
@@ -183,6 +185,11 @@ mod imp {
         if let Some(n) = disque {
             sortie.push(n.to_string_lossy().to_string());
         }
+        // Périphérique virtuel (image montée, disque en mémoire, réseau) :
+        // marqué pour rendre l'ensemble non identifié.
+        if p.components().any(|c| c.as_os_str() == "virtual") {
+            sortie.push(VIRTUEL.into());
+        }
     }
 
     pub fn identite(chemin: &Path) -> (Option<String>, Option<String>) {
@@ -202,6 +209,9 @@ mod imp {
         };
         let mut disques = Vec::new();
         disques_sous(&p, 0, &mut disques);
+        if disques.iter().any(|d| d == VIRTUEL) {
+            return (volume, None);
+        }
         (volume, super::joindre_disques(disques))
     }
 
@@ -244,15 +254,46 @@ mod imp {
     /// APFS, les « magasins physiques » du conteneur (un conteneur APFS est
     /// un disque synthétique, pas un disque physique) ; sinon le disque
     /// parent.
-    fn disques_physiques(noeud: &str) -> Option<String> {
+    fn diskutil(noeud: &str) -> Option<String> {
         let sortie = std::process::Command::new("/usr/sbin/diskutil")
             .args(["info", "-plist", noeud])
             .output()
             .ok()?;
-        if !sortie.status.success() {
-            return None;
+        sortie
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&sortie.stdout).to_string())
+    }
+
+    fn disques_physiques(noeud: &str) -> Option<String> {
+        let ids = analyser_plist(&diskutil(noeud)?)?;
+        // Chaque disque retenu doit être physique : une image disque (.dmg,
+        // .sparsebundle) montée depuis le disque interne n'est pas un
+        // second disque.
+        for d in ids.split(',') {
+            if !est_physique(&diskutil(d)?) {
+                return None;
+            }
         }
-        analyser_plist(&String::from_utf8_lossy(&sortie.stdout))
+        Some(ids)
+    }
+
+    pub fn est_physique(plist: &str) -> bool {
+        let Ok(racine) = xml::lire(plist) else {
+            return false;
+        };
+        let Some(dict) = racine.enfant("dict") else {
+            return false;
+        };
+        let valeur = |cle: &str| -> Option<String> {
+            let i = dict
+                .enfants
+                .iter()
+                .position(|e| e.nom == "key" && e.texte.trim() == cle)?;
+            dict.enfants.get(i + 1).map(|v| v.texte.trim().to_string())
+        };
+        valeur("VirtualOrPhysical").as_deref() == Some("Physical")
+            && valeur("BusProtocol").as_deref() != Some("Disk Image")
     }
 
     pub fn analyser_plist(texte: &str) -> Option<String> {
@@ -316,12 +357,45 @@ mod imp {
         FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows_sys::Win32::System::Ioctl::{
-        IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
+        PropertyStandardQuery, StorageDeviceProperty, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+        IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_DEVICE_DESCRIPTOR, STORAGE_DEVICE_NUMBER,
+        STORAGE_PROPERTY_QUERY,
     };
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
     fn large(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    /// Vrai si le périphérique est virtuel : disque virtuel (14), fichier
+    /// image (15), espaces de stockage (16). En cas de doute : virtuel.
+    fn bus_virtuel(h: windows_sys::Win32::Foundation::HANDLE) -> bool {
+        let requete = STORAGE_PROPERTY_QUERY {
+            PropertyId: StorageDeviceProperty,
+            QueryType: PropertyStandardQuery,
+            AdditionalParameters: [0],
+        };
+        let mut tampon = [0u64; 128];
+        let mut rendu: u32 = 0;
+        // SÛRETÉ : requête et tampon de sortie dimensionnés.
+        let ok = unsafe {
+            DeviceIoControl(
+                h,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                &requete as *const _ as *const _,
+                std::mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+                tampon.as_mut_ptr() as *mut _,
+                std::mem::size_of_val(&tampon) as u32,
+                &mut rendu,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || (rendu as usize) < std::mem::size_of::<STORAGE_DEVICE_DESCRIPTOR>() {
+            return true;
+        }
+        // SÛRETÉ : le tampon (aligné sur 8) contient un descripteur complet.
+        let d = unsafe { &*(tampon.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR) };
+        matches!(d.BusType, 14..=16)
     }
 
     /// Lecteur réseau monté sous une lettre (le système de fichiers y est
@@ -407,9 +481,12 @@ mod imp {
                 std::ptr::null_mut(),
             )
         };
+        let virtuel = bus_virtuel(h);
         // SÛRETÉ : poignée valide.
         unsafe { CloseHandle(h) };
-        let disque = (ok != 0).then(|| format!("PhysicalDrive{}", num.DeviceNumber));
+        // Disque virtuel (VHD, image), espace de stockage : ce n'est pas un
+        // disque physique identifiable.
+        let disque = (ok != 0 && !virtuel).then(|| format!("PhysicalDrive{}", num.DeviceNumber));
         (volume, disque)
     }
 }
@@ -492,6 +569,10 @@ mod tests {
         assert_eq!(imp::analyser_plist(p).as_deref(), Some("disk4"));
         let q = r#"<plist version="1.0"><dict><key>ParentWholeDisk</key><string>disk6</string></dict></plist>"#;
         assert_eq!(imp::analyser_plist(q).as_deref(), Some("disk6"));
+        let image = r#"<plist version="1.0"><dict><key>BusProtocol</key><string>Disk Image</string><key>VirtualOrPhysical</key><string>Virtual</string></dict></plist>"#;
+        assert!(!imp::est_physique(image));
+        let ssd = r#"<plist version="1.0"><dict><key>BusProtocol</key><string>USB</string><key>VirtualOrPhysical</key><string>Physical</string></dict></plist>"#;
+        assert!(imp::est_physique(ssd));
     }
 
     #[test]

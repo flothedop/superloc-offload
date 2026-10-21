@@ -335,7 +335,7 @@ function surDecharger() {
 function afficherFile() {
   const liste = $('file-liste');
   liste.textContent = '';
-  const visible = E.file.length > 0 || E.faits.length > 1 || E.pause;
+  const visible = E.file.length > 0 || E.faits.length > 1;
   $('file').classList.toggle('cache', !visible);
   $('file-compte').classList.toggle('cache', !E.file.length);
   $('file-compte').textContent = E.file.length ? `+${E.file.length}` : '';
