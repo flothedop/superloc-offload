@@ -1,176 +1,114 @@
 # SuperLoc Offload
 
-Copie et vérification de rushs. L'outil décharge une carte caméra vers
-plusieurs disques en une seule lecture, vérifie chaque copie en relisant
-réellement le support, et laisse sur chaque disque un fichier MHL et un
-rapport que le client ou la post-production peuvent revérifier plus tard.
+Outil gratuit de déchargement de cartes caméra, pour Mac et Windows. Il copie
+une carte vers plusieurs disques en une seule lecture, **relit chaque copie
+depuis le disque**, écrit les manifestes standard de la profession
+(**ASC MHL**, et MHL v1.1) et dit sans ambiguïté si la carte peut être
+formatée.
 
-![Copie conforme](docs/captures/03-conforme.png)
+![Bon à formater](docs/captures/03-bon-a-formater.png)
 
-*Fin de copie : le bandeau porte le verdict, le journal donne l'état de chaque
-fichier sur chaque disque.*
+## Le verdict
 
-| En cours | Copie non conforme |
+| Bandeau | Signification |
 |---|---|
-| ![Déchargement en cours](docs/captures/02-en-cours.png) | ![Copie non conforme](docs/captures/04-non-conforme.png) |
+| **BON À FORMATER** (vert) | Au moins deux copies, sur deux disques physiques différents, dont chaque fichier a été relu depuis le disque et trouvé identique à la carte. |
+| **COPIE CONFORME — NE PAS FORMATER ENCORE** (ambre) | Les copies sont identiques à la carte, mais une condition manque : une seule copie, deux copies sur le même disque, relecture non prouvée, mode « taille seule »… La raison est écrite sous le bandeau. |
+| **ÉCHEC — NE PAS FORMATER** (rouge) | Au moins un fichier n'est pas correctement copié. Chaque problème nomme le fichier, le disque et ce qu'il faut faire. |
+| **ANNULÉ** (rouge) | Les fichiers déjà vérifiés sont conservés, les autres n'ont pas été copiés. |
 
-## Ce que l'outil garantit
+Le vert ne vient que du moteur, jamais d'une décoration.
 
-- **Lecture unique de la carte**, écritures en parallèle vers 2 ou 3 disques.
-- **Empreinte calculée à la volée** : xxHash64 par défaut, MD5 en option.
-- **Relecture depuis le support** en contournant le cache du système : sans
-  cela, une vérification relit la mémoire vive et validerait une écriture
-  pourtant corrompue. Le mode réellement obtenu est consigné dans le
-  rapport ; s'il est dégradé, l'outil le signale au lieu d'afficher un vert
-  trompeur.
-- **Nom définitif après vérification seulement** : pendant la copie, chaque
-  fichier porte le suffixe `.offload-part`. Une copie interrompue ne peut
-  donc jamais passer pour un fichier complet.
-- **Rien n'est jamais écrasé** : si le dossier de destination existe déjà,
-  la copie est refusée.
-- **Espace disque contrôlé avant** de commencer, pas au milieu.
-- **Un disque qui tombe n'arrête pas les autres** : la copie continue et le
-  rapport nomme la destination fautive.
-- **Chaque destination avance à son rythme** : elle écrit, force l'écriture
-  physique, relit et renomme dans son propre fil. Un disque rapide n'attend
-  plus la vérification d'un disque lent.
+| Échec, avec le fichier et l'action | Diagnostic de lenteur |
+|---|---|
+| ![Échec](docs/captures/04-echec.png) | ![Diagnostic](docs/captures/05-diagnostic.png) |
 
-## Débit et diagnostic de lenteur
+## Ce qui est garanti, et comment
 
-![Diagnostic de lenteur](docs/captures/07-diagnostic.png)
+- **La carte n'est jamais modifiée.** Elle est ouverte en lecture seule ;
+  aucun manifeste n'y est déposé. Un test le vérifie à chaque version.
+- **Rien n'est écrasé.** Un dossier de destination existant est refusé (un
+  nom libre est proposé) ; chaque fichier est créé en exclusivité.
+- **Un fichier n'a son nom définitif qu'après vérification.** Pendant la
+  copie il s'appelle `….offload-part` ; un échec ou une annulation le
+  supprime.
+- **La relecture vient du disque, et c'est mesuré.** Après l'écriture et sa
+  synchronisation, le fichier est chassé du cache du système, puis l'outil
+  **mesure** qu'il n'en reste aucune page en mémoire avant de le relire.
+  Sur macOS, le seul drapeau « sans cache » ne suffit pas (le noyau sert
+  quand même les pages déjà en mémoire) : c'est pourquoi la v0.2 mesure. Le
+  niveau obtenu est consigné fichier par fichier dans le rapport.
+- **Les manifestes sont validés par l'outil officiel de l'ASC** (`ascmhl`) à
+  chaque construction, y compris les empreintes de dossiers.
+- **Les pannes sont testées pendant la copie**, pas après : bit retourné à
+  l'écriture, disque plein, disque débranché, écriture perdue, secteur
+  illisible sur la carte, carte modifiée pendant la lecture, relecture de la
+  carte différente, annulation.
+- **Contrôles avant d'écrire quoi que ce soit** : espace libre (par volume),
+  fichiers de plus de 4 Gio vers un disque FAT32, noms refusés par Windows,
+  collisions de noms (accents, majuscules), disque en lecture seule (NTFS sur
+  Mac), destination dans la carte.
+- **Copie conforme de la structure** : dossiers vides, fichiers de 0 octet,
+  dates de modification. Seuls les fichiers déposés par le système
+  (`.Spotlight-V100`, `._*`, `System Volume Information`…) sont écartés, et
+  listés dans le rapport.
 
-*Débit par disque, micro-courbe, compteurs qui divergent — le disque rapide
-a vérifié 15 fichiers quand le lent en est à 5 — et l'analyse ouverte
-pendant la copie.*
+Le détail est dans [docs/CONCEPTION.md](docs/CONCEPTION.md), les sources dans
+[docs/SOURCES.md](docs/SOURCES.md).
 
-Pendant la copie, chaque disque affiche son débit d'écriture et une
-micro-courbe des dernières minutes : la régularité se lit à l'œil, et c'est
-déjà un diagnostic.
+## Ce que l'outil écrit sur chaque disque
 
-Quand le débit décroche, l'outil ouvre un encart en deux parties strictement
-séparées :
-
-- **Mesuré** — des faits. Le principal : *où le tuyau attend*. Le moteur
-  chronomètre le temps pendant lequel la lecture de la carte a dû attendre
-  chaque disque, ce qui désigne le maillon limitant sans aucune supposition.
-  S'y ajoutent les débits, les pauses franches, le profil des fichiers et le
-  système de fichiers de chaque volume.
-- **Explications compatibles avec ces mesures — à vérifier** — des
-  hypothèses classées, jamais des conclusions, chacune accompagnée du geste
-  qui permet de trancher.
-
-L'outil ne prononce jamais une cause. Un plateau à 37 Mo/s donne « le disque
-est *peut-être* branché sur un port USB 2 — pour trancher : rebrancher sur
-un autre port et comparer », jamais « vous êtes en USB 2 ».
-
-Le diagnostic se tait tant qu'il n'a pas assez de matière : en dessous de
-vingt secondes de transfert, aucune tendance n'est calculée. Ce qui ne peut
-pas être mesuré de façon fiable n'est pas affiché — la détection
-SSD/mécanique, par exemple, est écartée parce que les bibliothèques la
-rapportent faux dès qu'il y a une couche de virtualisation.
-
-## L'application
-
-L'interface tient sur un seul écran : on dépose la carte, on coche les
-disques, on lance. Le bandeau du haut porte le verdict et sert lui-même de
-barre de progression ; le vert et le rouge n'y servent jamais à décorer, ils
-ne disent qu'une chose — vérifié, ou pas.
-
-```bash
-npm install      # une fois
-npm run dev      # lancer en développement
-npm run build    # produire l'installeur (.dmg sur Mac, .exe/.msi sur Windows)
+```
+2026-10-22_A001/
+  … copie conforme de la carte …
+  ascmhl/0001_2026-10-22_A001_2026-10-22_081512Z.mhl
+  ascmhl/ascmhl_chain.xml
+  2026-10-22_A001_2026-10-22_081512.mhl      (MHL v1.1)
+  _offload/rapport.html                       (imprimable en PDF)
+  _offload/rapport.json
+  _offload/journal.log
 ```
 
-L'intégration continue construit un installeur macOS universel (Intel et
-Apple Silicon dans un seul .dmg) et un installeur Windows (.exe) à chaque envoi : ils se récupèrent dans les artefacts du
-build, sans rien installer localement.
+## Utilisation
 
-Pour remettre une version aux clients, poser une étiquette :
+Voir le [guide d'utilisation](docs/GUIDE.md) : installation sur Mac et
+Windows, premier déchargement, vérification d'un disque.
 
-```bash
-git tag v0.1.0 && git push --tags
-```
-
-Les tests d'intégrité tournent d'abord — on ne publie pas un outil de
-vérification qui n'a pas été vérifié — puis les installeurs sont attachés à
-une publication GitHub en brouillon.
-
-### Signature
-
-Les installeurs ne sont pas signés. Sur Mac, le premier lancement demande un
-clic droit puis « Ouvrir » ; sur Windows, SmartScreen affiche un
-avertissement. Les faire disparaître demande un compte développeur Apple
-(99 $/an) et un certificat de signature Windows — à prévoir avant une
-diffusion large aux clients.
-
-## Utilisation en ligne de commande
+En ligne de commande :
 
 ```bash
-# Décharger une carte vers deux disques
-offload copier --source /Volumes/A001 \
-               --dest /Volumes/RAID_1 \
-               --dest /Volumes/BACKUP \
-               --nom A001 \
-               --empreinte xxh64
-
-# Revérifier un disque des mois plus tard, à partir de son MHL
-offload verifier --dossier /Volumes/RAID_1/A001
+offload copier /Volumes/A001 --dest /Volumes/SSD/Rushs --dest /Volumes/BACKUP/Rushs
+offload verifier /Volumes/BACKUP/Rushs/2026-10-22_A001
+offload volumes
 ```
 
-Options utiles :
+Codes de sortie : 0 bon à formater, 1 conforme mais ne pas formater encore,
+2 échec, 3 annulé, 4 refusé avant copie.
 
-| Option | Effet |
-|---|---|
-| `--empreinte xxh64,md5` | Calcule les deux empreintes en un seul passage (MD5 exigé par certaines post-productions). |
-| `--verifier-source` | Relit aussi la carte après copie : détecte un lecteur de cartes défaillant. |
+## Développement
 
-Code de sortie : `0` si tout est conforme, `1` sinon.
-
-## Ce qui est déposé sur chaque destination
-
-- `<nom>_AAAA-MM-JJ_HHMMSS.mhl` — Media Hash List v1.1, format XML normalisé
-  lu par Silverstack, ShotPut Pro, DaVinci Resolve et la plupart des outils
-  de DIT. N'atteste que des fichiers réellement vérifiés.
-- `<nom>_rapport.json` — rapport détaillé (empreintes, résultat par
-  destination, avertissements), source du futur PDF SuperLoc.
-
-## Contournement du cache selon le système
-
-| Système | Mécanisme |
-|---|---|
-| Linux | `O_DIRECT`, repli sur `posix_fadvise(DONTNEED)` |
-| macOS | `fcntl(F_NOCACHE)` + `F_RDAHEAD` désactivé |
-| Windows | `FILE_FLAG_NO_BUFFERING` |
-
-Si le système refuse le contournement, la vérification est marquée dégradée
-dans le rapport.
-
-## État de validation
-
-| Élément | État |
-|---|---|
-| Moteur, empreintes, MHL, détection de corruption | Testés (41 tests, dont 16 d'intégrité) |
-| Découplage des destinations | Mesuré : 2,2–3,1 s → 1,6 s sur une charge de 120 fichiers vers 2 disques |
-| Diagnostic : refus de conclure sans matière | Testé (un transfert court ne produit aucune hypothèse) |
-| Empreintes xxHash64 | Recoupées avec une implémentation indépendante |
-| Branche Linux de la lecture sans cache | Testée |
-| Couche Tauri, glisser-déposer, gestion des refus | Testés de bout en bout dans l'application |
-| Branches macOS et Windows de la lecture sans cache | **À valider sur machine réelle** |
-| Cartes caméra réelles (RED, Sony, ARRI) | **À valider sur le parc** |
-
-## Tests
+```
+crates/offload-core   moteur (copie, vérification, manifestes, rapports)
+crates/offload-cli    ligne de commande « offload »
+app/src-tauri         application (Tauri 2)
+app/ui                interface (HTML, CSS, JS sans dépendance)
+```
 
 ```bash
-cargo test
+cargo test -p offload-core           # tests du moteur
+pip install ascmhl==1.2              # pour le test d'interopérabilité ASC
+npm install && npm run dev           # application en développement
+npm run build                        # installeurs
 ```
 
-Les tests d'intégrité corrompent volontairement des copies — bit retourné,
-fichier tronqué, segment de clip absent, fichier en trop, disque qui tombe
-en cours de copie — et vérifient que le moteur les refuse.
+L'interface se prévisualise sans le moteur en ouvrant
+`app/ui/index.html?demo` dans un navigateur (variantes : `?demo=echec`,
+`?demo=lent`, `?demo=deja`). Sans `?demo`, elle refuse de fonctionner hors de
+l'application : un simulateur qui répondrait « conforme » en silence serait
+la pire panne possible.
 
-## Avertissement
+## Licence
 
-Cet outil est fourni sans garantie. Il ne remplace pas le contrôle humain
-des rushs : ne jamais effacer une carte sur la seule foi d'un voyant vert,
-sans avoir vu les images.
+MIT — voir [LICENSE](LICENSE). Outil fourni en l'état, comme aide à la
+vérification : gardez la carte intacte tant que deux copies vérifiées
+n'existent pas sur deux disques différents.

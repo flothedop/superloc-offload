@@ -384,7 +384,7 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
 }
 .journal__entete, .ligne {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 88px 78px var(--colonnes-dest, 90px);
+  grid-template-columns: minmax(0, 1fr) minmax(80px, 220px) var(--colonnes-dest, 90px);
   gap: 14px;
   align-items: center;
 }
@@ -752,3 +752,15 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
 .dialogue li { margin-bottom: 6px; }
 
 .reglage select option { background: var(--panneau-haut); }
+
+/* Pendant et après une copie, la préparation se replie : place au débit,
+   au verdict et aux problèmes. */
+.vue.compacte .travail, .vue.compacte .nommage { display: none; }
+.resume {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 28px; border-bottom: 1px solid var(--trait); background: var(--fond);
+  font-size: 13.5px; color: var(--texte-moyen);
+}
+.resume__texte { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resume__texte b { color: var(--texte); font-weight: 600; }
+.vue.compacte .debits { margin-top: 0; }

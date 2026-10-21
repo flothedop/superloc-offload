@@ -35,6 +35,10 @@
 <!-- ======================================================== Décharger -->
 <section class="vue" id="vue-decharger">
   <div class="defile">
+    <div class="resume cache" id="resume">
+      <span class="resume__texte" id="resume-texte"></span>
+      <button class="lien" id="resume-basculer" type="button" data-t="preparer_suivante"></button>
+    </div>
     <section class="travail">
       <div>
         <div class="etiquette"><span data-t="carte"></span> <span class="compte" id="carte-structure"></span></div>
@@ -130,7 +134,6 @@
       <div class="journal__entete">
         <div data-t="fichier"></div>
         <div data-t="clip"></div>
-        <div class="droite" data-t="taille"></div>
         <div class="droite" id="entete-dest" data-t="disques"></div>
       </div>
       <div class="journal__corps" id="journal-corps">

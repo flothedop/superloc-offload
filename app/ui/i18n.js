@@ -68,6 +68,7 @@ const TEXTES = {
     detail_annule: 'Les fichiers déjà vérifiés sont conservés ; les autres n\'ont pas été copiés.',
     niveau_support: 'relu depuis le disque', niveau_cache: 'identique, relecture peut-être servie par le cache', niveau_taille: 'taille seule', niveau_echec: 'échec',
     notif_titre: 'SuperLoc Offload',
+    preparer_suivante: 'Préparer la carte suivante', masquer_preparation: 'Replier',
   },
   en: {
     pret: 'Ready to offload',
@@ -134,6 +135,7 @@ const TEXTES = {
     detail_annule: 'Files already verified are kept; the others were not copied.',
     niveau_support: 'read back from disk', niveau_cache: 'identical, read-back may have come from cache', niveau_taille: 'size only', niveau_echec: 'failed',
     notif_titre: 'SuperLoc Offload',
+    preparer_suivante: 'Prepare the next card', masquer_preparation: 'Collapse',
   },
 };
 

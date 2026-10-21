@@ -20,7 +20,7 @@ const E = {
   tache: null,
   file: [],
   dernier: null,
-  journal: { problemes: [], recents: [], ok: 0 },
+  journal: { problemes: [], fichiers: new Map(), ok: 0 },
   rendu: false,
 };
 
@@ -116,8 +116,8 @@ function estDestination(point) {
 function afficherTuiles() {
   const zone = $('tuiles');
   zone.textContent = '';
-  if (E.tache) return;
-  const cartes = E.volumes.filter((v) => (v.camera || v.amovible) && !estDestination(v.point_montage));
+  const enCours = E.tache && E.tache.demande ? E.tache.demande.source : null;
+  const cartes = E.volumes.filter((v) => (v.camera || v.amovible) && !estDestination(v.point_montage) && v.point_montage !== enCours);
   for (const v of cartes.slice(0, 6)) {
     const b = el('button', 'tuile');
     b.type = 'button';
@@ -340,7 +340,7 @@ function afficherFile() {
 }
 
 function reinitialiserJournal(noms) {
-  E.journal = { problemes: [], recents: [], ok: 0 };
+  E.journal = { problemes: [], fichiers: new Map(), ok: 0 };
   const corps = $('journal-corps');
   corps.textContent = '';
   corps.append($('journal-vide') || el('p', 'journal__vide', t('journal_vide')));
@@ -348,6 +348,18 @@ function reinitialiserJournal(noms) {
   entete.textContent = t('disques');
   noms.forEach((_, i) => entete.append(el('span', 'repere', String(i + 1))));
   document.documentElement.style.setProperty('--colonnes-dest', `${Math.max(60, noms.length * 22 + 50)}px`);
+}
+
+function compacter(oui, texte) {
+  const vue = $('vue-decharger');
+  vue.classList.toggle('compacte', oui);
+  if (texte !== undefined) {
+    const r = $('resume-texte');
+    r.textContent = '';
+    r.append(el('b', null, texte.nom), document.createTextNode(` → ${texte.vers}`));
+  }
+  $('resume').classList.toggle('cache', !E.tache && !E.dernier);
+  $('resume-basculer').textContent = oui ? t('preparer_suivante') : t('masquer_preparation');
 }
 
 async function lancer(demande) {
@@ -359,6 +371,7 @@ async function lancer(demande) {
   $('ajouter').disabled = true;
   bandeau('copie', t('inventaire'), demande.nom);
   progression(0);
+  compacter(true, { nom: demande.nom, vers: demande.bases.join(' · ') });
   reinitialiserJournal(demande.bases);
   preparerDebits(demande.bases.map((b) => b.split(/[\\/]/).filter(Boolean).slice(-2).join('/')));
   afficherDisques();
@@ -404,20 +417,26 @@ function surEvenement(e) {
       tache.volumes = e.volumes || [];
       tache.noms = (e.volumes || []).map((v, i) => (v && v.nom && v.nom !== '/' ? v.nom : tache.demande.bases[i].split(/[\\/]/).filter(Boolean).slice(-1)[0]));
       preparerDebits(tache.noms);
+      compacter($('vue-decharger').classList.contains('compacte'), { nom: tache.demande.nom, vers: tache.noms.join(' · ') });
       break;
     case 'avancement':
       surAvancement(e);
       break;
-    case 'copie':
+    case 'copie': {
       if (e.niveau === 'echec') {
         E.journal.problemes.push({ chemin: e.chemin, destination: e.destination, message: e.message || (e.erreur && e.erreur.code) || '', action: e.action || '' });
       } else {
         E.journal.ok++;
-        E.journal.recents.push({ chemin: e.chemin, destination: e.destination, niveau: e.niveau });
-        if (E.journal.recents.length > 120) E.journal.recents.splice(0, E.journal.recents.length - 120);
       }
+      const j = E.journal.fichiers;
+      const f = j.get(e.index) || { chemin: e.chemin, etats: {} };
+      f.etats[e.destination] = e.niveau;
+      j.delete(e.index);
+      j.set(e.index, f);
+      if (j.size > 200) j.delete(j.keys().next().value);
       demanderRendu();
       break;
+    }
     case 'source':
       E.journal.problemes.push({ chemin: e.chemin, destination: null, message: e.message || '', action: e.action || '' });
       demanderRendu();
@@ -500,16 +519,17 @@ function ligneJournal(entree, echec) {
   const morceaux = entree.chemin.split('/');
   l.append(el('div', 'ligne__fichier', morceaux.slice(-1)[0]));
   l.append(el('div', 'ligne__clip', morceaux.length > 1 ? morceaux.slice(-2, -1)[0] : ''));
-  l.append(el('div', 'ligne__taille', ''));
   const etats = el('div', 'ligne__etats');
   const nb = E.tache ? E.tache.demande.bases.length : (E.dernier ? E.dernier.demande.bases.length : 1);
   for (let i = 0; i < nb; i++) {
     const p = el('span', 'pastille');
-    if (entree.destination === i || entree.destination == null) {
-      p.dataset.etat = echec ? 'echec' : entree.niveau === 'support' ? 'ok' : 'approx';
-      p.textContent = echec ? '✗' : entree.niveau === 'support' ? '✓' : '≈';
-    } else {
+    let niveau = entree.etats ? entree.etats[i] : (entree.destination === i || entree.destination == null ? 'echec' : undefined);
+    if (niveau === undefined) {
       p.dataset.etat = 'attente';
+    } else {
+      p.dataset.etat = niveau === 'echec' ? 'echec' : niveau === 'support' ? 'ok' : 'approx';
+      p.textContent = niveau === 'echec' ? '✗' : niveau === 'support' ? '✓' : '≈';
+      p.title = t({ echec: 'niveau_echec', support: 'niveau_support', 'cache-possible': 'niveau_cache', taille: 'niveau_taille' }[niveau] || 'niveau_echec');
     }
     etats.append(p);
   }
@@ -517,8 +537,7 @@ function ligneJournal(entree, echec) {
   if (echec) {
     const noms = E.tache ? E.tache.noms : (E.noms || []);
     const qui = entree.destination != null ? `${noms[entree.destination] || '#' + (entree.destination + 1)} : ` : '';
-    const motif = el('div', 'ligne__motif', `${qui}${entree.message}${entree.action ? ` — ${entree.action}` : ''}`);
-    l.append(motif);
+    l.append(el('div', 'ligne__motif', `${qui}${entree.message}${entree.action ? ` — ${entree.action}` : ''}`));
   }
   return l;
 }
@@ -527,14 +546,17 @@ function rendreJournal() {
   const corps = $('journal-corps');
   const j = E.journal;
   corps.textContent = '';
-  if (!j.problemes.length && !j.recents.length) {
+  if (!j.problemes.length && !j.fichiers.size) {
     corps.append(el('p', 'journal__vide', t('journal_vide')));
     $('journal-pied').classList.add('cache');
     return;
   }
   for (const p of j.problemes.slice(0, 300)) corps.append(ligneJournal(p, true));
-  const recents = j.recents.slice(-60).reverse();
-  for (const r of recents) corps.append(ligneJournal(r, false));
+  const recents = Array.from(j.fichiers.values()).slice(-60).reverse();
+  for (const r of recents) {
+    if (Object.values(r.etats).includes('echec')) continue;
+    corps.append(ligneJournal(r, false));
+  }
   $('journal-pied').classList.remove('cache');
   $('journal-pied').textContent = `${j.problemes.length} ${t('problemes')} · ${j.ok} ✓ · ${t('derniers')}`;
 }
@@ -620,6 +642,7 @@ function afficherIssue(demande, issue) {
 
 function nouvelleCopie() {
   E.dernier = null;
+  compacter(false);
   $('resultat').classList.add('cache');
   $('debits').classList.add('cache');
   $('analyse').classList.add('cache');
@@ -766,6 +789,7 @@ async function demarrer() {
   $('btn-verifier-annuler').addEventListener('click', () => BACKEND.annuler());
   $('analyse-fermer').addEventListener('click', () => $('analyse').classList.add('cache'));
   $('btn-nouvelle').addEventListener('click', nouvelleCopie);
+  $('resume-basculer').addEventListener('click', () => compacter(!$('vue-decharger').classList.contains('compacte')));
   $('btn-rapport').addEventListener('click', () => E.dernier && E.dernier.dossier && BACKEND.ouvrir(`${E.dernier.dossier}${E.dernier.dossier.includes('\\') ? '\\' : '/'}_offload${E.dernier.dossier.includes('\\') ? '\\' : '/'}rapport.html`));
   $('btn-dossier').addEventListener('click', () => E.dernier && E.dernier.dossier && BACKEND.ouvrir(E.dernier.dossier));
   $('btn-ejecter').addEventListener('click', async () => {
