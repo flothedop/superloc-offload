@@ -132,6 +132,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.bandeau__droite { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.bandeau__reste { font-size: 12px; color: var(--texte-moyen); min-height: 16px; }
 .bandeau__chiffre {
   font-family: 'Barlow Condensed', sans-serif;
   font-weight: 600;
@@ -161,6 +163,13 @@ body {
 .bandeau[data-etat="conforme"] .bandeau__detail { color: #0c3218; }
 .bandeau[data-etat="conforme"] .tally { background: #06210f; border-color: #06210f; }
 .bandeau[data-etat="conforme"] .bandeau__remplissage { display: none; }
+
+/* Conforme mais pas encore bon à formater : l'ambre plein, jamais le vert. */
+.bandeau[data-etat="attention"] { background: var(--safelight); border-bottom-color: var(--safelight); }
+.bandeau[data-etat="attention"] .bandeau__verdict { color: #1f1503; }
+.bandeau[data-etat="attention"] .bandeau__detail { color: #3a2706; font-weight: 500; }
+.bandeau[data-etat="attention"] .tally { background: #1f1503; border-color: #1f1503; }
+.bandeau[data-etat="attention"] .bandeau__remplissage { display: none; }
 
 .bandeau[data-etat="alerte"] { background: var(--alerte); border-bottom-color: var(--alerte); }
 .bandeau[data-etat="alerte"] .bandeau__verdict { color: #2a0503; }
@@ -231,8 +240,6 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
 .carte-pleine__faits {
   display: flex;
@@ -316,8 +323,8 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
   border-top: 1px solid var(--trait);
   background: var(--panneau);
 }
-.reglages { display: flex; gap: 22px; align-items: center; flex: 1; flex-wrap: wrap; }
-.reglage { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--texte-moyen); cursor: pointer; }
+.reglages { display: flex; gap: 10px 18px; align-items: center; flex: 1; flex-wrap: wrap; }
+.reglage { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--texte-moyen); cursor: pointer; white-space: nowrap; }
 .reglage input { accent-color: var(--safelight); width: 14px; height: 14px; cursor: pointer; }
 /* Le rendu natif des menus déroulants ignore la couleur du texte sous
    WebKit/GTK : on le dessine entièrement, chevron compris. */
@@ -598,3 +605,150 @@ body.glisse .carte-vide .contact { fill: var(--safelight); }
   font-size: 12px;
   color: var(--texte-faible);
 }
+
+
+/* ==========================================================================
+   v0.2 — onglets, vues, tuiles de cartes, nommage, débits, résultat
+   ========================================================================== */
+.onglets {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0 22px;
+  background: var(--panneau);
+  border-bottom: 1px solid var(--trait);
+}
+.onglet {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--texte-moyen); font: inherit; font-size: 14px;
+  padding: 10px 12px 8px; cursor: pointer;
+}
+.onglet:hover { color: var(--texte); }
+.onglet.actif { color: var(--texte); border-bottom-color: var(--safelight); }
+.onglets__file { margin-left: auto; align-self: center; font-size: 12px; color: var(--safelight); }
+
+.vue { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.defile { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.page { padding: 24px 28px; max-width: 980px; }
+.titre-page { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 26px; margin: 0 0 6px; }
+.sous-titre { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 19px; margin: 26px 0 6px; }
+.texte-page { color: var(--texte-moyen); max-width: 72ch; margin: 0 0 14px; user-select: text; }
+.texte-page.petit, .petit { font-size: 12px; }
+.ligne-boutons { display: flex; gap: 12px; align-items: center; margin: 14px 0; }
+.ligne-boutons.droite { justify-content: flex-end; }
+.droite { text-align: right; }
+
+.tuiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.tuile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  min-width: 128px; padding: 8px 12px;
+  background: var(--panneau); color: var(--texte);
+  border: 1px solid var(--trait-fort); border-radius: var(--r);
+  font: inherit; cursor: pointer; text-align: left;
+}
+.tuile:hover { border-color: var(--safelight); }
+.tuile.choisie { border-color: var(--safelight); box-shadow: inset 3px 0 0 var(--safelight); }
+.tuile__nom { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 17px; }
+.tuile__info { font-size: 11px; color: var(--texte-faible); }
+
+.carte-pleine__haut { display: flex; align-items: center; gap: 8px; }
+.carte-pleine__nom {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; border-bottom: 1px dashed transparent;
+  color: var(--texte); padding: 0;
+}
+.carte-pleine__nom:hover, .carte-pleine__nom:focus { border-bottom-color: var(--trait-fort); outline: none; }
+.carte-pleine__faits > div { min-width: 64px; }
+.note {
+  margin-top: 10px; padding: 8px 10px; font-size: 12.5px;
+  border-left: 2px solid var(--safelight); background: #262a24; color: var(--texte);
+  user-select: text;
+}
+.note--alerte { border-left-color: var(--alerte); background: #2a1615; color: #ffb3ad; }
+
+.disque { grid-template-columns: 22px minmax(0, 1fr) auto; }
+.disque input[type="checkbox"] { accent-color: var(--safelight); width: 15px; height: 15px; justify-self: center; cursor: pointer; }
+.disque__centre { min-width: 0; }
+.disque__fs { font-size: 11px; color: var(--texte-faible); font-weight: 400; }
+.disque__retirer:disabled { visibility: hidden; }
+
+.nommage { margin-top: 12px; border-bottom: 1px solid var(--trait); padding-bottom: 10px; }
+.nommage summary { cursor: pointer; color: var(--texte-moyen); font-size: 14px; padding: 4px 0; }
+.nommage summary:hover { color: var(--texte); }
+.nommage__apercu { font-size: 11.5px; color: var(--texte-faible); margin-left: 6px; }
+.champs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin-top: 10px; }
+.champs--page { max-width: 640px; align-items: end; }
+.champ { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--texte-moyen); }
+.champ--large { grid-column: 1 / -1; }
+.champ small { color: var(--texte-faible); font-size: 11px; }
+.champ input, .champ select {
+  background: var(--panneau-haut); color: var(--texte);
+  border: 1px solid var(--trait-fort); border-radius: var(--r);
+  padding: 7px 9px; font: inherit; font-size: 13.5px; user-select: text;
+}
+.champ select { appearance: none; -webkit-appearance: none; }
+.champ input:focus, .champ select:focus { border-color: var(--safelight); outline: none; }
+
+.travail { padding-bottom: 6px; }
+
+.debits {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 28px; margin-top: 14px;
+  background: var(--panneau); border-top: 1px solid var(--trait); border-bottom: 1px solid var(--trait);
+}
+.debit { display: grid; grid-template-columns: 20px minmax(110px, 200px) minmax(0, 1fr) 96px 120px; gap: 12px; align-items: center; }
+.debit__nom { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.debit__barre { position: relative; height: 8px; background: #161c1e; border-radius: 2px; overflow: hidden; }
+.debit__ecrit { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--safelight-sourd); transition: width .2s linear; }
+.debit__relu { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--safelight); transition: width .2s linear; }
+.debit__valeur { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 18px; text-align: right; font-variant-numeric: tabular-nums; }
+.debit__etat { font-size: 11px; color: var(--texte-faible); text-align: right; white-space: nowrap; }
+.debit--panne .debit__nom, .debit--panne .debit__etat { color: #ff9a92; }
+
+.resultat { flex: 0 0 auto; padding: 14px 28px; border-bottom: 1px solid var(--trait); }
+.resultat__remarques { margin: 12px 0 0; padding: 0; list-style: none; }
+.resultat__remarques li, .verif__liste li {
+  padding: 6px 0 6px 12px; border-left: 2px solid var(--trait-fort);
+  margin-bottom: 6px; font-size: 13.5px; user-select: text;
+}
+.remarque--alerte { border-left-color: var(--alerte) !important; }
+.remarque__action { display: block; color: var(--texte-moyen); font-size: 12.5px; margin-top: 2px; }
+.resultat__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+.file { padding: 12px 28px 0; }
+.file ol { margin: 0; padding-left: 20px; color: var(--texte-moyen); font-size: 13px; }
+
+.journal { flex: 1 0 220px; }
+.journal__corps { min-height: 120px; }
+.journal__pied { font-size: 11px; color: var(--texte-faible); padding: 6px 0 10px; }
+.pastille[data-etat="approx"] { background: var(--safelight); border-color: var(--safelight); }
+
+.verif { margin-top: 10px; }
+.verif__chemin { font-size: 12px; color: var(--texte-faible); margin-bottom: 8px; user-select: text; }
+.verif__resume { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 22px; margin-bottom: 10px; }
+.verif__resume--ok { color: var(--conforme); }
+.verif__resume--ko { color: #ff8a80; }
+.verif__liste { margin: 0; padding: 0; list-style: none; }
+
+.tableau { width: 100%; border-collapse: collapse; font-size: 13px; user-select: text; }
+.tableau th, .tableau td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--trait); vertical-align: top; }
+.tableau th { color: var(--texte-faible); font-weight: 600; font-family: 'Barlow Condensed', sans-serif; letter-spacing: .04em; }
+.tableau td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.tableau td.vide { color: var(--texte-faible); padding: 20px 0; }
+.tableau .petit { white-space: pre-line; color: var(--texte-faible); }
+.verdict-bon-a-formater { color: var(--conforme); font-weight: 600; }
+.verdict-conforme-ne-pas-formater { color: var(--safelight); }
+.verdict-echec, .verdict-annule { color: #ff8a80; font-weight: 600; }
+
+.dialogue {
+  max-width: 560px; background: var(--panneau-haut); color: var(--texte);
+  border: 1px solid var(--trait-fort); border-radius: 6px; padding: 22px 26px;
+}
+.dialogue::backdrop { background: rgba(5, 8, 9, .72); }
+.dialogue h2 { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 26px; margin: 0 0 10px; }
+.dialogue p, .dialogue li { color: var(--texte-moyen); font-size: 14px; }
+.dialogue li { margin-bottom: 6px; }
+
+.reglage select option { background: var(--panneau-haut); }

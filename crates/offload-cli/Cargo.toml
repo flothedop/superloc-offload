@@ -16,3 +16,4 @@ offload-core = { path = "../offload-core" }
 serde_json = "1"
 chrono = "0.4"
 keepawake = "0.6"
+ctrlc = "3"

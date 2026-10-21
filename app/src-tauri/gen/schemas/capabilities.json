@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Permissions de l'application","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:allow-set-title","dialog:allow-open","opener:allow-open-path"]}}

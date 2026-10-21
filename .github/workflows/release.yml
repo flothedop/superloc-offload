@@ -1,6 +1,6 @@
 name: Publier une version
 
-# Pousser une étiquette de version (git tag v0.1.0 && git push --tags)
+# Pousser une étiquette de version (git tag v0.2.0 && git push --tags)
 # construit les installeurs Mac et Windows et les attache à une
 # publication GitHub, prête à être transmise aux clients.
 on:
@@ -46,10 +46,37 @@ jobs:
 
       # Les tests d'intégrité passent avant toute publication : on ne
       # distribue pas un outil de vérification qui n'a pas été vérifié.
+      - uses: actions/setup-python@v5
+        if: runner.os != 'Windows'
+        with:
+          python-version: "3.12"
+      - name: Installer ascmhl (référence ASC)
+        if: runner.os != 'Windows'
+        run: |
+          pip install ascmhl==1.2
+          echo "ASCMHL_OBLIGATOIRE=1" >> "$GITHUB_ENV"
       - name: Tests d'intégrité
         run: cargo test -p offload-core --all-targets
 
       - run: npm install
+
+      - name: Signature Apple (si configurée)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              echo "$v=${!v}" >> "$GITHUB_ENV"
+            done
+          fi
+
       - run: npm run build -- --target ${{ matrix.cible }} --bundles ${{ matrix.paquets }}
 
       - name: Attacher les installeurs à la publication

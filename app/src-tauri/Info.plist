@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>SuperLoc Offload lit vos cartes caméra pour les copier et les vérifier. Il n'écrit jamais sur la carte.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>SuperLoc Offload peut copier vos rushs vers un disque réseau que vous choisissez.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>SuperLoc Offload écrit les copies dans le dossier que vous choisissez.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>SuperLoc Offload écrit les copies dans le dossier que vous choisissez.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>SuperLoc Offload écrit les copies dans le dossier que vous choisissez.</string>
+</dict>
+</plist>

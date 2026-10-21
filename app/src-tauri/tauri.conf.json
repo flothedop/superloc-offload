@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SuperLoc Offload",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "fr.superloc.offload",
   "build": {
     "frontendDist": "../ui"
@@ -13,7 +13,7 @@
         "title": "SuperLoc Offload",
         "width": 1180,
         "height": 820,
-        "minWidth": 940,
+        "minWidth": 980,
         "minHeight": 620,
         "dragDropEnabled": true
       }
@@ -34,6 +34,9 @@
     ],
     "copyright": "SuperLoc",
     "shortDescription": "Copie et vérification de rushs",
-    "longDescription": "Décharge une carte caméra vers plusieurs disques en une seule lecture, vérifie chaque copie en relisant réellement le support, et dépose un fichier MHL sur chaque destination."
+    "longDescription": "Décharge une carte caméra vers plusieurs disques en une seule lecture, relit chaque copie depuis le disque, écrit les manifestes ASC MHL et dit sans ambiguïté si la carte peut être formatée.",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
   }
 }

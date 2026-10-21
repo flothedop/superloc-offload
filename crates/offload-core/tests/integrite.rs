@@ -317,9 +317,9 @@ fn secteur_illisible_sur_la_carte() {
         .find(|f| f.chemin.ends_with("_001.R3D"))
         .unwrap();
     assert_eq!(f.erreur_source.as_ref().unwrap().code, Code::LectureSource);
-    for d in 0..2 {
+    for (d, dossier) in dests.iter().enumerate() {
         assert_eq!(f.copie(d).unwrap().niveau, Niveau::Echec);
-        assert!(residus(&dests[d]).is_empty());
+        assert!(residus(dossier).is_empty());
     }
     // Les fichiers suivants sont copiés normalement.
     assert!(copie(&r, "_002.R3D", 0).niveau > Niveau::Echec);

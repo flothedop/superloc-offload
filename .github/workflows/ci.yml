@@ -22,17 +22,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
-        run: cargo fmt --check -p offload-core
+        run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy -p offload-core --all-targets -- -D warnings
+        run: cargo clippy -p offload-core -p offload-cli --all-targets -- -D warnings
 
-      # Les tests d'intégrité corrompent volontairement des copies : bit
-      # retourné, fichier tronqué, segment de clip absent, disque qui tombe.
-      # Ils vérifient aussi que la relecture contourne bien le cache du
-      # système sur cette plateforme.
+      # Outil de référence de l'ASC : nos manifestes doivent passer
+      # « ascmhl-debug verify ». Sur Linux et macOS, le test d'interopérabilité
+      # est OBLIGATOIRE (il échoue si l'outil manque).
+      - uses: actions/setup-python@v5
+        if: runner.os != 'Windows'
+        with:
+          python-version: "3.12"
+      - name: Installer ascmhl (référence ASC)
+        if: runner.os != 'Windows'
+        run: |
+          pip install ascmhl==1.2
+          echo "ASCMHL_OBLIGATOIRE=1" >> "$GITHUB_ENV"
+
+      # Pannes injectées pendant la copie, interopérabilité ASC MHL, et
+      # mesure de la résidence en cache après écriture (le test qui
+      # prouve, sur macOS, que la relecture vient bien du disque).
       - name: Tests d'intégrité
-        run: cargo test -p offload-core --all-targets
+        run: cargo test -p offload-core -p offload-cli --all-targets
+
+      - name: Test de résidence en cache (détail)
+        if: runner.os != 'Windows'
+        run: cargo test -p offload-core apres_eviction -- --nocapture
 
   application:
     name: Application — ${{ matrix.os }}
@@ -42,15 +58,11 @@ jobs:
       matrix:
         include:
           # Un seul installeur Mac, universel : Intel et Apple Silicon.
-          # (Les machines macos-13 de GitHub, seules à être Intel, ont été
-          # retirées fin 2025.)
           - os: macos-latest
             cible: universal-apple-darwin
             rust_cibles: aarch64-apple-darwin,x86_64-apple-darwin
             paquets: app,dmg
-          # Windows : installeur .exe (NSIS) seulement. Le .msi passe par
-          # l'outil WiX, fragile sur les machines de GitHub, et ne sert
-          # vraiment qu'aux déploiements en parc d'entreprise.
+          # Windows : installeur .exe (NSIS).
           - os: windows-latest
             cible: x86_64-pc-windows-msvc
             rust_cibles: x86_64-pc-windows-msvc
@@ -61,13 +73,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_cibles }}
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      - name: Clippy (application)
+        run: cargo clippy -p superloc-offload -- -D warnings
+
       - name: Installer l'outil Tauri
         run: npm install
+
+      # Signature et notarisation Apple : seulement si les secrets existent.
+      # Sans eux, l'application est construite non signée.
+      - name: Signature Apple (si configurée)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              echo "$v=${!v}" >> "$GITHUB_ENV"
+            done
+            echo "Signature Apple activée."
+          else
+            echo "Pas de certificat Apple : application non signée."
+          fi
 
       - name: Construire l'application
         run: npm run build -- --target ${{ matrix.cible }} --bundles ${{ matrix.paquets }}
@@ -79,4 +117,4 @@ jobs:
           path: |
             target/${{ matrix.cible }}/release/bundle/dmg/*.dmg
             target/${{ matrix.cible }}/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+          if-no-files-found: error

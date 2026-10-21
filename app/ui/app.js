@@ -1,629 +1,823 @@
-/* ==========================================================================
-   SuperLoc Offload — logique d'interface
-   ========================================================================== */
+/* SuperLoc Offload — interface.
+ * Règle absolue : le vert et le rouge ne décorent jamais. Le vert ne vient
+ * que d'un verdict « bon à formater » rendu par le moteur ; le rouge, que
+ * d'un échec. */
+'use strict';
 
 const $ = (id) => document.getElementById(id);
-
-// Le message d'accueil du journal est retiré du DOM pendant une copie :
-// on en garde la référence pour pouvoir le remettre ensuite.
-const messageVide = document.getElementById('journal-vide');
-
-const etat = {
-  source: null,
-  disques: [],
-  lignes: [],
-  enCours: false,
-  rapport: null,
-  // Débit, courbe et avancement de chaque destination.
-  mesures: [],
-  // Un verdict affiché (vert, rouge, ou refus) reste à l'écran tant que
-  // l'utilisateur n'a pas relancé une opération : c'est la seule chose
-  // qu'il est venu lire, aucun rafraîchissement d'état ne doit l'effacer.
-  verdictAffiche: false,
+const el = (tag, cls, texte) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (texte !== undefined) e.textContent = texte;
+  return e;
 };
 
-/* ------------------------------------------------------------------ Outils */
+const E = {
+  reglages: null,
+  source: null,
+  apercus: [],
+  volumes: [],
+  tache: null,
+  file: [],
+  dernier: null,
+  journal: { problemes: [], recents: [], ok: 0 },
+  rendu: false,
+};
 
-function debitLisible(o) {
-  if (!o || o <= 0) return '—';
-  const mo = o / 1e6;
-  if (mo >= 1000) return `${(mo / 1000).toFixed(2)} Go/s`;
-  if (mo >= 100) return `${mo.toFixed(0)} Mo/s`;
-  return `${mo.toFixed(1)} Mo/s`;
-}
-
-function octets(n) {
-  if (n === 0) return '0 o';
-  const u = ['o', 'ko', 'Mo', 'Go', 'To'];
-  let v = n, i = 0;
-  while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
-  return `${i === 0 ? v : v.toFixed(v < 10 ? 2 : v < 100 ? 1 : 0)} ${u[i]}`;
-}
-
-function codeClip(clip) {
-  const m = clip.match(/_(C\d+)_/) || clip.match(/^(C\d+)/);
-  return m ? m[1] : clip.replace(/\.[A-Za-z0-9]+$/, '');
-}
-
-function nomCourt(chemin) {
-  const bouts = chemin.split('/');
-  return bouts[bouts.length - 1];
-}
-
-/* ------------------------------------------------------------ Bandeau d'état */
-
-function bandeau({ etat: e, verdict, detail, pourcent }) {
-  const b = $('bandeau');
-  b.dataset.etat = e;
+/* ------------------------------------------------------------- Bandeau */
+function bandeau(etat, verdict, detail) {
+  $('bandeau').dataset.etat = etat;
   $('verdict').textContent = verdict;
-  $('detail').textContent = detail;
-  const enCours = e === 'copie' || e === 'verif';
+  $('detail').textContent = detail || '';
+  const enCours = etat === 'copie';
   $('chiffre').classList.toggle('cache', !enCours);
-  if (pourcent != null) {
-    $('remplissage').style.width = `${pourcent}%`;
-    $('chiffre').innerHTML = `${Math.round(pourcent)}<span>%</span>`;
-  }
-  if (!enCours) $('remplissage').style.width = '0';
+  if (!enCours) { $('remplissage').style.width = '0'; $('reste').textContent = ''; }
 }
 
-function bandeauRepos() {
-  if (etat.enCours || etat.verdictAffiche) return;
-  if (!etat.source) {
-    bandeau({ etat: 'repos', verdict: 'Prêt à décharger', detail: 'Choisir une carte et au moins un disque.' });
-  } else if (etat.disques.length === 0) {
-    bandeau({ etat: 'repos', verdict: 'Prêt à décharger', detail: 'Ajouter au moins un disque de destination.' });
-  } else {
-    const manque = etat.disques.filter((d) => d.libre < etat.source.octets);
-    if (manque.length) {
-      bandeau({
-        etat: 'repos',
-        verdict: 'Place insuffisante',
-        detail: `${manque.map((d) => d.nom).join(', ')} ne peut pas recevoir ${octets(etat.source.octets)}.`,
-      });
-    } else {
-      bandeau({
-        etat: 'repos',
-        verdict: 'Prêt à décharger',
-        detail: `${etat.source.fichiers.length} fichiers · ${octets(etat.source.octets)} vers ${etat.disques.length} disque${etat.disques.length > 1 ? 's' : ''}.`,
+function progression(fraction, reste) {
+  const p = Math.max(0, Math.min(1, fraction));
+  $('remplissage').style.width = `${(p * 100).toFixed(2)}%`;
+  $('chiffre').firstChild.nodeValue = `${Math.floor(p * 100)}`;
+  $('reste').textContent = reste ? `${t('reste')} ${duree(reste)}` : '';
+}
+
+/* ------------------------------------------------------------ Réglages */
+let minuterieSauvegarde = null;
+function sauver() {
+  clearTimeout(minuterieSauvegarde);
+  minuterieSauvegarde = setTimeout(() => BACKEND.reglagesEcrire(E.reglages).catch(() => {}), 300);
+}
+
+function appliquerReglages() {
+  const r = E.reglages;
+  $('gabarit').value = r.gabarit || '{date}_{carte}';
+  $('projet').value = r.projet || '';
+  $('jour').value = r.jour || '';
+  $('camera').value = r.camera || '';
+  $('operateur').value = r.operateur || '';
+  $('mode').value = r.mode || 'complet';
+  $('algos').value = (r.algos || ['xxh128', 'xxh64']).join(',');
+  if (!$('algos').value) $('algos').value = 'xxh128,xxh64';
+  $('mhl1').checked = r.mhl_v1 !== false;
+  $('ejecter').checked = !!r.ejecter;
+  $('r-langue').value = r.langue || '';
+  $('r-operateur').value = r.operateur || '';
+  $('r-email').value = r.email || '';
+  $('r-lieu').value = r.lieu || '';
+  $('r-son').checked = r.son !== false;
+  $('r-notification').checked = r.notification !== false;
+}
+
+function lierReglages() {
+  const champ = (id, cle, apres) => $(id).addEventListener('input', () => {
+    E.reglages[cle] = $(id).value;
+    sauver();
+    if (apres) apres();
+  });
+  champ('gabarit', 'gabarit', majApercu);
+  champ('projet', 'projet', majApercu);
+  champ('jour', 'jour', majApercu);
+  champ('camera', 'camera', majApercu);
+  champ('operateur', 'operateur', () => { $('r-operateur').value = E.reglages.operateur; majApercu(); });
+  champ('r-operateur', 'operateur', () => { $('operateur').value = E.reglages.operateur; });
+  champ('r-email', 'email');
+  champ('r-lieu', 'lieu');
+  $('mode').addEventListener('change', () => { E.reglages.mode = $('mode').value; sauver(); });
+  $('algos').addEventListener('change', () => { E.reglages.algos = $('algos').value.split(','); sauver(); });
+  $('mhl1').addEventListener('change', () => { E.reglages.mhl_v1 = $('mhl1').checked; sauver(); });
+  $('ejecter').addEventListener('change', () => { E.reglages.ejecter = $('ejecter').checked; sauver(); });
+  $('r-son').addEventListener('change', () => { E.reglages.son = $('r-son').checked; sauver(); });
+  $('r-notification').addEventListener('change', () => { E.reglages.notification = $('r-notification').checked; sauver(); });
+  $('r-langue').addEventListener('change', () => {
+    E.reglages.langue = $('r-langue').value;
+    sauver();
+    choisirLangue(E.reglages.langue);
+    rafraichirTout();
+  });
+}
+
+function valeursNommage() {
+  const r = E.reglages;
+  return { carte: E.source ? $('carte-nom').value.trim() || E.source.nom : 'CARTE', date: '', projet: r.projet || '', jour: r.jour || '', camera: r.camera || '', operateur: r.operateur || '' };
+}
+
+/* -------------------------------------------------------------- Onglets */
+function montrerVue(nom) {
+  document.querySelectorAll('.onglet').forEach((o) => o.classList.toggle('actif', o.dataset.vue === nom));
+  document.querySelectorAll('.vue').forEach((v) => v.classList.toggle('cache', v.id !== `vue-${nom}`));
+  if (nom === 'historique') afficherHistorique();
+}
+
+/* ---------------------------------------------------------------- Carte */
+function estDestination(point) {
+  return (E.reglages.actives || []).some((b) => b === point || b.startsWith(point.endsWith('/') || point.endsWith('\\') ? point : point + '/') || b.startsWith(point + '\\'));
+}
+
+function afficherTuiles() {
+  const zone = $('tuiles');
+  zone.textContent = '';
+  if (E.tache) return;
+  const cartes = E.volumes.filter((v) => (v.camera || v.amovible) && !estDestination(v.point_montage));
+  for (const v of cartes.slice(0, 6)) {
+    const b = el('button', 'tuile');
+    b.type = 'button';
+    if (E.source && E.source.chemin === v.point_montage) b.classList.add('choisie');
+    b.append(el('span', 'tuile__nom', v.nom || v.point_montage));
+    b.append(el('span', 'tuile__info mono', `${v.camera || v.systeme_fichiers} · ${octets(v.total - v.libre)}`));
+    b.addEventListener('click', () => choisirSource(v.point_montage));
+    zone.append(b);
+  }
+}
+
+async function choisirSource(chemin) {
+  if (E.tache && !E.file) return;
+  $('carte-vide').classList.add('cache');
+  $('carte-pleine').classList.remove('cache');
+  $('carte-nom').value = '…';
+  $('carte-chemin').textContent = chemin;
+  try {
+    const s = await BACKEND.analyserSource(chemin);
+    E.source = s;
+    $('carte-nom').value = s.nom;
+    $('carte-chemin').textContent = s.chemin;
+    $('fait-clips').textContent = s.nb_clips;
+    $('fait-fichiers').textContent = s.nb_fichiers;
+    $('fait-taille').textContent = octets(s.octets);
+    $('fait-camera').textContent = s.camera || (s.volume ? s.volume.systeme_fichiers : '—');
+    $('carte-structure').textContent = s.volume ? `${s.volume.systeme_fichiers}` : '';
+    const deja = (s.deja || []).slice(-1)[0];
+    $('carte-deja').classList.toggle('cache', !deja);
+    if (deja) {
+      $('carte-deja').textContent = t('deja_dechargee', {
+        date: new Date(deja.date).toLocaleString(LANGUE),
+        verdict: texteVerdict(deja.verdict),
+        dest: deja.destinations.join(', '),
       });
     }
+    const alertes = [];
+    if (s.illisibles && s.illisibles.length) alertes.push(t('illisibles', { n: s.illisibles.length }));
+    if (s.segments_manquants && s.segments_manquants.length) alertes.push(t('segments_manquants', { s: s.segments_manquants.join(', ') }));
+    $('carte-alerte').classList.toggle('cache', !alertes.length);
+    $('carte-alerte').textContent = alertes.join(' ');
+  } catch (e) {
+    E.source = null;
+    $('carte-nom').value = '';
+    $('carte-alerte').classList.remove('cache');
+    $('carte-alerte').textContent = String(e);
   }
+  afficherTuiles();
+  majApercu();
+  majPret();
 }
 
-/* -------------------------------------------------------------------- Carte */
-
-function majSource() {
-  const vide = !etat.source;
-  $('carte-vide').classList.toggle('cache', !vide);
-  $('carte-pleine').classList.toggle('cache', vide);
-  $('source-structure').textContent = vide ? '' : etat.source.structure;
-  if (!vide) {
-    $('carte-nom').textContent = etat.source.nom;
-    $('carte-chemin').textContent = etat.source.chemin;
-    $('fait-clips').textContent = etat.source.clips;
-    $('fait-fichiers').textContent = etat.source.fichiers.length;
-    $('fait-taille').textContent = octets(etat.source.octets);
-  }
-  majAction();
+function oublierSource() {
+  E.source = null;
+  $('carte-vide').classList.remove('cache');
+  $('carte-pleine').classList.add('cache');
+  $('carte-structure').textContent = '';
+  afficherTuiles();
+  majApercu();
+  majPret();
 }
 
-/* -------------------------------------------------------------- Destinations */
+/* --------------------------------------------------------- Destinations */
+let minuterieApercu = null;
+function majApercu() {
+  clearTimeout(minuterieApercu);
+  minuterieApercu = setTimeout(async () => {
+    const bases = E.reglages.destinations || [];
+    try {
+      E.apercus = await BACKEND.apercu({ bases, gabarit: E.reglages.gabarit || '', valeurs: valeursNommage() });
+    } catch (_) {
+      E.apercus = [];
+    }
+    afficherDisques();
+  }, 120);
+}
 
-function majDisques() {
-  const hote = $('disques');
-  hote.textContent = '';
-
-  etat.disques.forEach((d, i) => {
-    const besoin = etat.source ? etat.source.octets : 0;
-    const occupe = ((d.total - d.libre) / d.total) * 100;
-    const ajout = Math.min(100 - occupe, (besoin / d.total) * 100);
-    const tient = d.libre >= besoin;
-
-    const ligne = document.createElement('div');
-    ligne.className = 'disque';
-    ligne.innerHTML = `
-      <div class="disque__rang mono">${i + 1}</div>
-      <div>
-        <div class="disque__nom"></div>
-        <div class="disque__chemin mono"></div>
-        <div class="jauge ${tient ? '' : 'jauge--pleine'}">
-          <div class="jauge__occupe" style="width:${occupe}%"></div>
-          <div class="jauge__ajout" style="left:${occupe}%;width:${Math.max(ajout, besoin ? 0.6 : 0)}%"></div>
-        </div>
-        <div class="disque__espace ${tient ? '' : 'insuffisant'}"></div>
-        <div class="disque__mesure cache" data-mesure="${i}">
-          <span class="disque__debit">—</span>
-          <svg class="courbe" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true">
-            <polyline points=""></polyline>
-          </svg>
-          <span class="disque__avancement"></span>
-        </div>
-      </div>
-      <button class="disque__retirer" type="button" aria-label="Retirer ce disque">×</button>`;
-    ligne.querySelector('.disque__nom').textContent = d.nom;
-    ligne.querySelector('.disque__chemin').textContent = d.chemin;
-    ligne.querySelector('.disque__espace').textContent = besoin
-      ? (tient
-        ? `${octets(d.libre)} libres — il restera ${octets(d.libre - besoin)} après la copie`
-        : `${octets(d.libre)} libres — il manque ${octets(besoin - d.libre)}`)
-      : `${octets(d.libre)} libres sur ${octets(d.total)}`;
-    ligne.querySelector('.disque__retirer').addEventListener('click', () => {
-      if (etat.enCours) return;
-      etat.disques.splice(i, 1);
-      majDisques();
+function afficherDisques() {
+  const zone = $('disques');
+  zone.textContent = '';
+  const bases = E.reglages.destinations || [];
+  const actives = new Set(E.reglages.actives || []);
+  const besoin = E.source ? E.source.octets * 1.01 + 64e6 : 0;
+  bases.forEach((b, i) => {
+    const a = E.apercus.find((x) => x.base === b) || { base: b, dossier: b, volume: null, existe_base: true };
+    const ligne = el('div', 'disque');
+    const case_ = el('input');
+    case_.type = 'checkbox';
+    case_.checked = actives.has(b);
+    case_.disabled = !!E.tache;
+    case_.addEventListener('change', () => {
+      const s = new Set(E.reglages.actives || []);
+      if (case_.checked) s.add(b); else s.delete(b);
+      E.reglages.actives = bases.filter((x) => s.has(x));
+      sauver();
+      afficherDisques();
+      afficherTuiles();
+      majPret();
     });
-    hote.appendChild(ligne);
+    ligne.append(case_);
+
+    const centre = el('div', 'disque__centre');
+    const v = a.volume;
+    const nomBase = b.split(/[\\/]/).filter(Boolean).slice(-1)[0] || b;
+    const nomVol = v && v.nom && v.nom !== '/' && !/^[A-Za-z]:\\?$/.test(v.nom) ? v.nom : '';
+    const titre = el('div', 'disque__nom', nomVol ? (nomVol === nomBase ? nomVol : `${nomVol} — ${nomBase}`) : nomBase);
+    if (v) titre.append(el('span', 'disque__fs mono', ` ${v.systeme_fichiers}`));
+    centre.append(titre);
+    centre.append(el('div', 'disque__chemin mono', actives.has(b) ? a.dossier : b));
+    if (!a.existe_base) {
+      centre.append(el('div', 'disque__espace insuffisant', t('disque_absent')));
+    } else if (v && v.total) {
+      const jauge = el('div', 'jauge');
+      const occ = el('div', 'jauge__occupe');
+      occ.style.width = `${((v.total - v.libre) / v.total) * 100}%`;
+      const ajout = el('div', 'jauge__ajout');
+      ajout.style.left = occ.style.width;
+      ajout.style.width = `${Math.min(100, (besoin / v.total) * 100)}%`;
+      jauge.append(occ, ajout);
+      const manque = besoin > v.libre;
+      if (manque) jauge.classList.add('jauge--pleine');
+      centre.append(jauge);
+      const esp = el('div', 'disque__espace', `${octets(v.libre)} ${t('libres')}${besoin ? ` · ${octets(besoin)} ${t('necessaires')}` : ''}${manque ? ` — ${t('insuffisant')}` : ''}`);
+      if (manque) esp.classList.add('insuffisant');
+      centre.append(esp);
+    }
+    ligne.append(centre);
+
+    const retirer = el('button', 'disque__retirer', '×');
+    retirer.type = 'button';
+    retirer.title = t('retirer');
+    retirer.disabled = !!E.tache;
+    retirer.addEventListener('click', () => {
+      E.reglages.destinations = bases.filter((x, j) => j !== i);
+      E.reglages.actives = (E.reglages.actives || []).filter((x) => x !== b);
+      sauver();
+      majApercu();
+      majPret();
+    });
+    ligne.append(retirer);
+    zone.append(ligne);
   });
+  const n = (E.reglages.actives || []).length;
+  $('compte-disques').textContent = `${n} ${t('sur')} ${bases.length}`;
+  const ac = (E.reglages.actives || [])[0];
+  const ap = E.apercus.find((x) => x.base === ac);
+  $('nommage-apercu').textContent = ap ? ap.dossier.split(/[\\/]/).slice(-1)[0] : '';
+}
 
-  $('compte-disques').textContent = `${etat.disques.length} sur 3`;
-  $('ajouter').disabled = etat.disques.length >= 3 || etat.enCours;
-  $('ajouter').textContent = etat.disques.length >= 3 ? 'Trois disques au maximum' : 'Ajouter un disque';
-  document.documentElement.style.setProperty(
-    '--colonnes-dest',
-    etat.disques.length ? `${etat.disques.length * 21}px` : '64px');
+async function ajouterDisque(chemin) {
+  const c = chemin || (await BACKEND.choisirDossier());
+  if (!c) return;
+  const d = E.reglages.destinations || [];
+  if (!d.includes(c)) d.push(c);
+  E.reglages.destinations = d;
+  const a = new Set(E.reglages.actives || []);
+  a.add(c);
+  E.reglages.actives = d.filter((x) => a.has(x));
+  sauver();
+  majApercu();
+  afficherTuiles();
+  majPret();
+}
+
+/* -------------------------------------------------------------- Lancer */
+function demandeCourante() {
+  const r = E.reglages;
+  return {
+    source: E.source.chemin,
+    nom: $('carte-nom').value.trim() || E.source.nom,
+    bases: (r.actives || []).slice(),
+    gabarit: r.gabarit || '',
+    valeurs: valeursNommage(),
+    mode: r.mode || 'complet',
+    algos: (r.algos && r.algos.length) ? r.algos : ['xxh128', 'xxh64'],
+    mhl_v1: r.mhl_v1 !== false,
+    email: r.email || '',
+    lieu: r.lieu || '',
+    commentaire: '',
+    langue: LANGUE,
+    ejecter: !!r.ejecter,
+    octets: E.source.octets,
+  };
+}
+
+function majPret() {
+  const n = (E.reglages.actives || []).length;
+  const memeCarte = E.tache && E.tache.demande && E.source && E.tache.demande.source === E.source.chemin;
+  const ok = !!E.source && !memeCarte && n > 0 && E.apercus.filter((a) => (E.reglages.actives || []).includes(a.base)).every((a) => a.existe_base);
+  $('btn-decharger').disabled = !ok;
+  $('btn-decharger').textContent = E.tache ? t('mettre_en_file') : t('decharger');
+  if (E.tache || E.dernier) return;
+  if (!ok) bandeau('repos', t('pret'), t('pret_detail'));
+  else bandeau('repos', t('pret'), n < 2 ? t('pret_un_disque') : t('pret_ok'));
+}
+
+function surDecharger() {
+  if (!E.source) return;
+  const d = demandeCourante();
+  if (E.tache) {
+    E.file.push(d);
+    afficherFile();
+    $('pied-info').textContent = t('copie_lancee_file');
+    oublierSource();
+    return;
+  }
+  lancer(d);
+}
+
+function afficherFile() {
+  const liste = $('file-liste');
+  liste.textContent = '';
+  $('file').classList.toggle('cache', !E.file.length);
+  $('file-compte').classList.toggle('cache', !E.file.length);
+  $('file-compte').textContent = E.file.length ? `+${E.file.length}` : '';
+  for (const d of E.file) {
+    const li = el('li', null, `${d.nom} — ${octets(d.octets)} → ${d.bases.length} ${t('destinations').toLowerCase()} · ${t('attente')}`);
+    liste.append(li);
+  }
+}
+
+function reinitialiserJournal(noms) {
+  E.journal = { problemes: [], recents: [], ok: 0 };
+  const corps = $('journal-corps');
+  corps.textContent = '';
+  corps.append($('journal-vide') || el('p', 'journal__vide', t('journal_vide')));
   const entete = $('entete-dest');
-  entete.textContent = '';
-  if (etat.disques.length) {
-    etat.disques.forEach((d, i) => {
-      const rep = document.createElement('span');
-      rep.className = 'repere';
-      rep.textContent = i + 1;
-      rep.title = d.nom;
-      entete.appendChild(rep);
-    });
-  } else {
-    entete.textContent = 'Disques';
-  }
-  majAction();
+  entete.textContent = t('disques');
+  noms.forEach((_, i) => entete.append(el('span', 'repere', String(i + 1))));
+  document.documentElement.style.setProperty('--colonnes-dest', `${Math.max(60, noms.length * 22 + 50)}px`);
 }
 
-function majAction() {
-  const prêt = !!etat.source
-    && etat.disques.length > 0
-    && etat.disques.every((d) => d.libre >= etat.source.octets);
-  $('btn-decharger').disabled = !prêt || etat.enCours || !!etat.rapport;
-  bandeauRepos();
-}
+async function lancer(demande) {
+  E.tache = { demande, noms: [], volumes: [], phase: 'inventaire', total: demande.octets, fin: false };
+  E.dernier = null;
+  $('resultat').classList.add('cache');
+  $('analyse').classList.add('cache');
+  $('btn-annuler').classList.remove('cache');
+  $('ajouter').disabled = true;
+  bandeau('copie', t('inventaire'), demande.nom);
+  progression(0);
+  reinitialiserJournal(demande.bases);
+  preparerDebits(demande.bases.map((b) => b.split(/[\\/]/).filter(Boolean).slice(-2).join('/')));
+  afficherDisques();
+  afficherTuiles();
+  majPret();
 
-function majMesure(destination, debit, fichiersFaits) {
-  const m = etat.mesures[destination] || (etat.mesures[destination] = { courbe: [], max: 0 });
-  m.debit = debit;
-  m.faits = fichiersFaits;
-  if (debit > 0) {
-    m.courbe.push(debit);
-    if (m.courbe.length > 48) m.courbe.shift();
-    m.max = Math.max(m.max, debit);
+  let issue;
+  try {
+    issue = await BACKEND.decharger(demande);
+  } catch (e) {
+    issue = { issue: 'refus', erreurs: [{ message: String(e), action: '' }] };
   }
-
-  const bloc = document.querySelector(`[data-mesure="${destination}"]`);
-  if (!bloc) return;
-  bloc.classList.remove('cache');
-  bloc.querySelector('.disque__debit').textContent = debitLisible(debit);
-  const total = etat.source ? etat.source.fichiers.length : 0;
-  bloc.querySelector('.disque__avancement').textContent =
-    total ? `${fichiersFaits || 0}/${total} vérifiés` : '';
-
-  // Courbe normalisée sur le maximum vu : ce qu'on lit, c'est la régularité.
-  const pts = m.courbe;
-  if (pts.length > 1 && m.max > 0) {
-    const pas = 100 / (pts.length - 1);
-    bloc.querySelector('polyline').setAttribute(
-      'points',
-      pts.map((v, i) => `${(i * pas).toFixed(1)},${(21 - (v / m.max) * 19).toFixed(1)}`).join(' '),
-    );
+  E.tache = null;
+  $('btn-annuler').classList.add('cache');
+  $('ajouter').disabled = false;
+  afficherIssue(demande, issue);
+  majApercu();
+  afficherDisques();
+  afficherTuiles();
+  majPret();
+  if (E.file.length) {
+    const suivante = E.file.shift();
+    afficherFile();
+    setTimeout(() => lancer(suivante), 800);
   }
 }
 
-function cacherMesures() {
-  document.querySelectorAll('[data-mesure]').forEach((b) => b.classList.add('cache'));
+/* ---------------------------------------------------- Événements moteur */
+function surEvenement(e) {
+  const tache = E.tache;
+  if (!tache) return;
+  switch (e.type) {
+    case 'phase':
+      tache.phase = e.phase;
+      if (e.phase === 'controle') bandeau('copie', t('controle'), tache.demande.nom);
+      if (e.phase === 'copie') bandeau('copie', `${t('copie')} — ${tache.demande.nom}`, '');
+      if (e.phase === 'relecture-carte') bandeau('copie', t('relecture_carte'), tache.demande.nom);
+      if (e.phase === 'rapports') bandeau('copie', t('rapports'), tache.demande.nom);
+      break;
+    case 'debut':
+      tache.total = e.octets;
+      tache.nb = e.nb_fichiers;
+      tache.volumes = e.volumes || [];
+      tache.noms = (e.volumes || []).map((v, i) => (v && v.nom && v.nom !== '/' ? v.nom : tache.demande.bases[i].split(/[\\/]/).filter(Boolean).slice(-1)[0]));
+      preparerDebits(tache.noms);
+      break;
+    case 'avancement':
+      surAvancement(e);
+      break;
+    case 'copie':
+      if (e.niveau === 'echec') {
+        E.journal.problemes.push({ chemin: e.chemin, destination: e.destination, message: e.message || (e.erreur && e.erreur.code) || '', action: e.action || '' });
+      } else {
+        E.journal.ok++;
+        E.journal.recents.push({ chemin: e.chemin, destination: e.destination, niveau: e.niveau });
+        if (E.journal.recents.length > 120) E.journal.recents.splice(0, E.journal.recents.length - 120);
+      }
+      demanderRendu();
+      break;
+    case 'source':
+      E.journal.problemes.push({ chemin: e.chemin, destination: null, message: e.message || '', action: e.action || '' });
+      demanderRendu();
+      break;
+    case 'diagnostic':
+      afficherDiagnostic(e);
+      break;
+    case 'destination':
+      if (e.erreur) {
+        E.journal.problemes.push({ chemin: tache.noms[e.destination] || `#${e.destination + 1}`, destination: e.destination, message: e.message || '', action: e.action || '' });
+        demanderRendu();
+      }
+      break;
+    default:
+  }
 }
 
-/* --------------------------------------------------- Analyse de lenteur */
+function surAvancement(a) {
+  const tache = E.tache;
+  const passes = tache.demande.mode === 'taille' ? 1 : 2;
+  const total = Math.max(a.total, 1);
+  let f = 1;
+  a.destinations.forEach((d) => {
+    if (d.en_panne) return;
+    const x = d.termine ? 1 : (d.ecrits + d.relus) / (passes * total);
+    f = Math.min(f, x);
+  });
+  if (a.relecture_carte != null) f = a.relecture_carte / total;
+  progression(f, a.restant_s);
+  if (tache.phase === 'copie') {
+    $('detail').textContent = `${t('fichier_n', { i: a.index + 1, n: a.nb_fichiers })} · ${a.chemin} · ${t('lecture')} ${debit(a.debit_lecture)}`;
+  }
+  a.destinations.forEach((d, i) => majDebit(i, d, total, passes));
+}
 
-function afficherAnalyse(diag) {
-  if (!diag || (!diag.faits.length && !diag.hypotheses.length)) return;
-  const section = $('analyse');
+/* ----------------------------------------------------------- Débits */
+function preparerDebits(noms) {
+  const zone = $('debits');
+  zone.textContent = '';
+  zone.classList.remove('cache');
+  noms.forEach((nom, i) => {
+    const l = el('div', 'debit');
+    l.id = `debit-${i}`;
+    l.append(el('span', 'repere', String(i + 1)));
+    l.append(el('span', 'debit__nom', nom));
+    const barre = el('div', 'debit__barre');
+    const ecrit = el('div', 'debit__ecrit');
+    const relu = el('div', 'debit__relu');
+    barre.append(ecrit, relu);
+    l.append(barre);
+    l.append(el('span', 'debit__valeur', '—'));
+    l.append(el('span', 'debit__etat mono', ''));
+    zone.append(l);
+  });
+}
+
+function majDebit(i, d, total, passes) {
+  const l = $(`debit-${i}`);
+  if (!l) return;
+  l.querySelector('.debit__ecrit').style.width = `${Math.min(100, (d.ecrits / total) * 100)}%`;
+  l.querySelector('.debit__relu').style.width = passes > 1 ? `${Math.min(100, (d.relus / total) * 100)}%` : '0';
+  l.querySelector('.debit__valeur').textContent = d.termine ? '' : debit(d.debit);
+  const etat = d.en_panne ? t('en_panne') : d.termine ? t('termine') : `${d.fichiers_ok} ✓${d.fichiers_echec ? ` · ${d.fichiers_echec} ✗` : ''}`;
+  l.querySelector('.debit__etat').textContent = etat;
+  l.classList.toggle('debit--panne', d.en_panne);
+}
+
+/* ---------------------------------------------------------- Journal */
+function demanderRendu() {
+  if (E.rendu) return;
+  E.rendu = true;
+  requestAnimationFrame(() => {
+    E.rendu = false;
+    rendreJournal();
+  });
+}
+
+function ligneJournal(entree, echec) {
+  const l = el('div', echec ? 'ligne ligne--echec' : 'ligne');
+  const morceaux = entree.chemin.split('/');
+  l.append(el('div', 'ligne__fichier', morceaux.slice(-1)[0]));
+  l.append(el('div', 'ligne__clip', morceaux.length > 1 ? morceaux.slice(-2, -1)[0] : ''));
+  l.append(el('div', 'ligne__taille', ''));
+  const etats = el('div', 'ligne__etats');
+  const nb = E.tache ? E.tache.demande.bases.length : (E.dernier ? E.dernier.demande.bases.length : 1);
+  for (let i = 0; i < nb; i++) {
+    const p = el('span', 'pastille');
+    if (entree.destination === i || entree.destination == null) {
+      p.dataset.etat = echec ? 'echec' : entree.niveau === 'support' ? 'ok' : 'approx';
+      p.textContent = echec ? '✗' : entree.niveau === 'support' ? '✓' : '≈';
+    } else {
+      p.dataset.etat = 'attente';
+    }
+    etats.append(p);
+  }
+  l.append(etats);
+  if (echec) {
+    const noms = E.tache ? E.tache.noms : (E.noms || []);
+    const qui = entree.destination != null ? `${noms[entree.destination] || '#' + (entree.destination + 1)} : ` : '';
+    const motif = el('div', 'ligne__motif', `${qui}${entree.message}${entree.action ? ` — ${entree.action}` : ''}`);
+    l.append(motif);
+  }
+  return l;
+}
+
+function rendreJournal() {
+  const corps = $('journal-corps');
+  const j = E.journal;
+  corps.textContent = '';
+  if (!j.problemes.length && !j.recents.length) {
+    corps.append(el('p', 'journal__vide', t('journal_vide')));
+    $('journal-pied').classList.add('cache');
+    return;
+  }
+  for (const p of j.problemes.slice(0, 300)) corps.append(ligneJournal(p, true));
+  const recents = j.recents.slice(-60).reverse();
+  for (const r of recents) corps.append(ligneJournal(r, false));
+  $('journal-pied').classList.remove('cache');
+  $('journal-pied').textContent = `${j.problemes.length} ${t('problemes')} · ${j.ok} ✓ · ${t('derniers')}`;
+}
+
+/* ------------------------------------------------------- Diagnostic */
+function afficherDiagnostic(d) {
+  if (!d || ((!d.faits || !d.faits.length) && (!d.hypotheses || !d.hypotheses.length))) return;
   const faits = $('analyse-faits');
   const hypos = $('analyse-hypotheses');
-
   faits.textContent = '';
-  diag.faits.forEach((f) => {
-    const li = document.createElement('li');
-    li.textContent = f;
-    faits.appendChild(li);
-  });
-
   hypos.textContent = '';
-  diag.hypotheses.forEach((h) => {
-    const li = document.createElement('li');
-    const titre = document.createElement('span');
-    titre.className = 'hypo__titre';
-    titre.textContent = h.titre;
-    const parce = document.createTextNode(`parce que ${h.parce_que}`);
-    const test = document.createElement('span');
-    test.className = 'hypo__test';
-    test.textContent = `Pour trancher : ${h.verifier}`;
-    li.append(titre, parce, test);
-    hypos.appendChild(li);
+  (d.faits || []).forEach((f) => faits.append(el('li', null, f)));
+  (d.hypotheses || []).forEach((h) => {
+    const li = el('li');
+    li.append(el('span', 'hypo__titre', h.titre));
+    li.append(document.createTextNode(h.parce_que));
+    li.append(el('span', 'hypo__test', h.verifier));
+    hypos.append(li);
   });
-
-  section.classList.remove('cache');
+  if (d.lent || (d.hypotheses && d.hypotheses.length)) $('analyse').classList.remove('cache');
 }
 
-$('analyse-fermer').addEventListener('click', () => $('analyse').classList.add('cache'));
-
-/* ------------------------------------------------------------------ Journal */
-
-function journalPreparer() {
-  const corps = $('journal-corps');
-  corps.textContent = '';
-  etat.premierEchec = null;
-  etat.lignes = etat.source.fichiers.map((f, i) => {
-    const el = document.createElement('div');
-    el.className = 'ligne';
-    el.innerHTML = `
-      <div class="ligne__fichier"></div>
-      <div class="ligne__clip"></div>
-      <div class="ligne__taille">${octets(f.taille)}</div>
-      <div class="ligne__etats">${etat.disques.map(() => '<span class="pastille" data-etat="attente"></span>').join('')}</div>`;
-    el.querySelector('.ligne__fichier').textContent = nomCourt(f.chemin);
-    // Un fichier qui constitue à lui seul son clip n'a pas besoin d'être
-    // répété dans la colonne : son nom est déjà en première colonne.
-    el.querySelector('.ligne__clip').textContent =
-      f.clip === f.chemin ? '—' : codeClip(f.clip);
-    corps.appendChild(el);
-    return el;
-  });
-  messageVide.classList.add('cache');
+/* ------------------------------------------------------------ Issue */
+function texteVerdict(v) {
+  return { 'bon-a-formater': t('bon'), 'conforme-ne-pas-formater': t('conforme'), echec: t('echec'), annule: t('annule') }[v] || v;
 }
 
-function journalEcriture(index) {
-  const l = etat.lignes[index];
-  if (!l) return;
-  l.querySelectorAll('.pastille').forEach((p) => { p.dataset.etat = 'ecriture'; });
-  l.scrollIntoView({ block: 'nearest' });
-}
+function afficherIssue(demande, issue) {
+  E.dernier = { demande, issue };
+  $('debits').classList.remove('cache');
+  const res = $('resultat');
+  const rem = $('remarques');
+  rem.textContent = '';
+  res.classList.remove('cache');
 
-function journalResultat(r) {
-  const l = etat.lignes[r.index];
-  if (!l) return;
-  // Chaque destination remonte son propre verdict, quand elle y arrive.
-  const pastilles = l.querySelectorAll('.pastille');
-  const p = pastilles[r.destination];
-  if (p) {
-    p.dataset.etat = r.etat;
-    p.textContent = r.etat === 'ok' ? '✓' : '✕';
-  }
-  if (r.etat === 'echec') {
-    l.classList.add('ligne--echec');
-    // Le motif n'est écrit qu'une fois : répété à chaque ligne, il noie
-    // justement l'information qu'il porte.
-    if (r.motif && etat.premierEchec == null) {
-      etat.premierEchec = r.index;
-      const m = document.createElement('div');
-      m.className = 'ligne__motif';
-      m.textContent = r.motif;
-      l.appendChild(m);
+  if (issue.issue === 'refus') {
+    bandeau('alerte', t('refusee'), t('refusee_detail'));
+    $('debits').classList.add('cache');
+    for (const e of issue.erreurs) {
+      const li = el('li', 'remarque--alerte');
+      li.append(el('b', null, e.message));
+      if (e.action) li.append(el('span', 'remarque__action', e.action));
+      rem.append(li);
     }
-  }
-}
-
-/* ------------------------------------------------------------- Déchargement */
-
-async function decharger(scenario) {
-  etat.enCours = true;
-  etat.rapport = null;
-  etat.verdictAffiche = false;
-  etat.mesures = etat.disques.map(() => ({ courbe: [], max: 0 }));
-  $('analyse').classList.add('cache');
-  majDisques();
-  $('btn-decharger').disabled = true;
-  $('btn-verifier').disabled = true;
-  ['btn-dossier', 'btn-rapport', 'btn-recommencer'].forEach((b) => $(b).classList.add('cache'));
-  journalPreparer();
-
-  const debut = Date.now();
-  let dernierChemin = '';
-
-  let rapport;
-  try {
-    rapport = await Backend.decharger({
-      source: etat.source,
-      destinations: etat.disques,
-      empreinte: $('empreinte').value,
-      verifierSource: $('verifier-source').checked,
-      scenario,
-    }, {
-      onFichier: (e) => {
-        dernierChemin = e.chemin;
-        journalEcriture(e.index);
-        $('pied-info').textContent = `Fichier ${e.index + 1} sur ${e.total} — ${nomCourt(e.chemin)}`;
-      },
-      onOctets: (e) => {
-        const pct = (e.copies / e.total) * 100;
-        const ecoule = (Date.now() - debut) / 1000;
-        const moyen = ecoule > 0.5 ? e.copies / ecoule : 0;
-        const restant = moyen > 0 ? (e.total - e.copies) / moyen : 0;
-        bandeau({
-          etat: 'copie',
-          verdict: 'Déchargement',
-          detail: moyen
-            ? `carte ${debitLisible(e.debit || moyen)} — ${Math.max(1, Math.ceil(restant / 60))} min restantes — ${nomCourt(dernierChemin)}`
-            : nomCourt(dernierChemin),
-          pourcent: pct,
-        });
-      },
-      // Chaque destination remonte son propre débit : c'est elle qu'on
-      // regarde quand on se demande qui traîne.
-      onDebit: (e) => majMesure(e.destination, e.debit, e.fichiers_faits),
-      onDiagnostic: afficherAnalyse,
-      onResultat: journalResultat,
-    });
-  } catch (e) {
-    // Refus au démarrage : dossier déjà présent, place insuffisante, carte
-    // illisible. L'écran doit le dire, pas rester sur « Déchargement ».
-    etat.enCours = false;
-    etat.rapport = null;
-    etat.verdictAffiche = true;
-    bandeau({
-      etat: 'alerte',
-      verdict: 'Copie refusée',
-      detail: String(e && e.message ? e.message : e),
-    });
-    $('pied-info').textContent = 'Aucun fichier copié';
-    $('btn-verifier').disabled = false;
-    majDisques();
-    majAction();
+    ['btn-rapport', 'btn-dossier', 'btn-ejecter'].forEach((id) => $(id).classList.add('cache'));
+    son(false);
     return;
   }
 
-  etat.enCours = false;
-  etat.rapport = rapport;
-  terminer(rapport);
+  const r = issue.rapport;
+  E.noms = issue.noms || [];
+  const etat = { 'bon-a-formater': 'conforme', 'conforme-ne-pas-formater': 'attention', echec: 'alerte', annule: 'alerte' }[r.verdict];
+  const detail = { 'bon-a-formater': t('detail_bon'), 'conforme-ne-pas-formater': t('detail_conforme'), echec: t('detail_echec'), annule: t('detail_annule') }[r.verdict];
+  const duree_s = (new Date(r.fin) - new Date(r.debut)) / 1000;
+  bandeau(etat, texteVerdict(r.verdict), `${demande.nom} · ${r.nb_fichiers} ${t('fichiers')} · ${octets(r.octets)} · ${duree(duree_s)} — ${detail}`);
+  for (const x of issue.remarques || []) rem.append(el('li', null, x));
+  if (issue.ejection) {
+    rem.append(el('li', null, issue.ejection.Ok !== undefined || issue.ejection === null ? t('ejection_ok') : t('ejection_ko', { e: issue.ejection.Err })));
+  }
+  // Le journal final reprend tous les problèmes du rapport (avec action).
+  if (issue.problemes && issue.problemes.length) {
+    E.journal.problemes = issue.problemes;
+    rendreJournal();
+  }
+  const premiere = r.destinations.find((d) => !d.erreur_fatale) || r.destinations[0];
+  E.dernier.dossier = premiere ? premiere.dossier : null;
+  ['btn-rapport', 'btn-dossier'].forEach((id) => $(id).classList.toggle('cache', !E.dernier.dossier));
+  $('btn-ejecter').classList.toggle('cache', r.annule);
+  r.destinations.forEach((d, i) => {
+    const l = $(`debit-${i}`);
+    if (!l) return;
+    if (!d.erreur_fatale) {
+      l.querySelector('.debit__ecrit').style.width = '100%';
+      if (demande.mode !== 'taille') l.querySelector('.debit__relu').style.width = '100%';
+    }
+    l.classList.toggle('debit--panne', !!d.erreur_fatale);
+    l.querySelector('.debit__valeur').textContent = debit(d.profil && d.profil.debit_moyen);
+    l.querySelector('.debit__etat').textContent = d.erreur_fatale ? t('en_panne') : `${d.fichiers_ok}/${r.nb_fichiers} ✓`;
+  });
+  son(r.verdict === 'bon-a-formater' || r.verdict === 'conforme-ne-pas-formater');
+  if (E.reglages.notification !== false) BACKEND.notifier(t('notif_titre'), `${demande.nom} : ${texteVerdict(r.verdict)}`);
 }
 
-function terminer(rapport) {
-  etat.verdictAffiche = true;
-  const echecs = rapport.destinations.filter((d) => !d.conforme);
-  if (rapport.conforme) {
-    bandeau({
-      etat: 'conforme',
-      verdict: 'Copie conforme',
-      detail: `${rapport.nb_fichiers} fichiers relus sur ${rapport.destinations.length} disque${rapport.destinations.length > 1 ? 's' : ''} — la carte peut être effacée.`,
-    });
-  } else {
-    bandeau({
-      etat: 'alerte',
-      verdict: 'Copie non conforme',
-      detail: `Ne pas effacer la carte. ${echecs.map((d) => `${d.nom} : ${d.fichiers_echec} fichiers en échec`).join(' · ')}`,
-    });
-  }
-  $('pied-info').textContent = rapport.destinations
-    .map(
-      (d) =>
-        `${d.nom} — ${d.fichiers_ok}/${rapport.nb_fichiers} vérifiés · ${debitLisible(d.debit_moyen)}`,
-    )
-    .join('   ·   ');
-  if (rapport.diagnostic) afficherAnalyse(rapport.diagnostic);
-  cacherMesures();
-  // En cas d'échec, l'écran se place sur le premier fichier fautif plutôt
-  // que de laisser le journal en bas de liste.
-  if (!rapport.conforme && etat.premierEchec != null && etat.lignes[etat.premierEchec]) {
-    etat.lignes[etat.premierEchec].scrollIntoView({ block: 'center' });
-  }
-  ['btn-dossier', 'btn-rapport', 'btn-recommencer'].forEach((b) => $(b).classList.remove('cache'));
-  $('btn-verifier').disabled = false;
-  majDisques();
-}
-
-/* ---------------------------------------------------------------- Câblage */
-
-$('carte-vide').addEventListener('click', async () => {
-  const c = await Backend.choisirCarte();
-  if (c) {
-    etat.source = c;
-    etat.rapport = null;
-    etat.verdictAffiche = false;
-    majSource();
-    majDisques();
-    journalPreparer();
-  }
-});
-
-$('ajouter').addEventListener('click', async () => {
-  const d = await Backend.choisirDisque();
-  if (d && !etat.disques.some((x) => x.chemin === d.chemin)) {
-    etat.disques.push(d);
-    majDisques();
-  }
-});
-
-$('btn-decharger').addEventListener('click', () => decharger());
-
-$('btn-recommencer').addEventListener('click', () => {
-  etat.rapport = null;
-  etat.source = null;
-  etat.lignes = [];
-  etat.premierEchec = null;
-  etat.verdictAffiche = false;
-  etat.mesures = [];
+function nouvelleCopie() {
+  E.dernier = null;
+  $('resultat').classList.add('cache');
+  $('debits').classList.add('cache');
   $('analyse').classList.add('cache');
-  $('journal-corps').textContent = '';
-  $('journal-corps').appendChild(messageVide);
-  messageVide.classList.remove('cache');
-  $('pied-info').textContent = 'Aucune copie en cours';
-  ['btn-dossier', 'btn-rapport', 'btn-recommencer'].forEach((b) => $(b).classList.add('cache'));
-  majSource();
-  majDisques();
-});
+  reinitialiserJournal([]);
+  rendreJournal();
+  oublierSource();
+}
 
-$('btn-dossier').addEventListener('click', () => {
-  if (etat.rapport) Backend.ouvrirDossier(etat.rapport.destinations[0].dossier);
-});
-$('btn-rapport').addEventListener('click', () => {
-  if (etat.rapport) Backend.ouvrirDossier(etat.rapport.dossier_rapport || etat.rapport.destinations[0].dossier);
-});
-
-// Glisser-déposer d'une carte sur la fenêtre
-['dragenter', 'dragover'].forEach((e) => document.addEventListener(e, (ev) => {
-  ev.preventDefault();
-  document.body.classList.add('glisse');
-}));
-['dragleave', 'drop'].forEach((e) => document.addEventListener(e, (ev) => {
-  ev.preventDefault();
-  document.body.classList.remove('glisse');
-}));
-
-majSource();
-majDisques();
-
-/* ------------------------------------------------- Vérifier un disque */
-
-$('btn-verifier').addEventListener('click', async () => {
-  if (etat.enCours) return;
-  etat.enCours = true;
-  etat.rapport = null;
-  etat.verdictAffiche = false;
-  $('btn-verifier').disabled = true;
-  $('btn-decharger').disabled = true;
-  bandeau({ etat: 'verif', verdict: 'Vérification', detail: 'Relecture du disque à partir de son MHL', pourcent: 0 });
-
-  let r;
+/* -------------------------------------------------------------- Son */
+function son(reussite) {
+  if (E.reglages && E.reglages.son === false) return;
   try {
-    r = await Backend.verifierDossier();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const notes = reussite ? [[660, 0], [880, 0.16]] : [[220, 0], [220, 0.28], [220, 0.56]];
+    for (const [f, d] of notes) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = reussite ? 'sine' : 'square';
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, ctx.currentTime + d);
+      g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + d + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + d + 0.22);
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + d);
+      o.stop(ctx.currentTime + d + 0.25);
+    }
+  } catch (_) { /* pas de son : pas grave */ }
+}
+
+/* --------------------------------------------------------- Vérifier */
+async function verifierUnDossier() {
+  if (E.tache) return;
+  const chemin = await BACKEND.choisirDossier();
+  if (!chemin) return;
+  const zone = $('verif');
+  zone.classList.remove('cache');
+  $('verif-chemin').textContent = chemin;
+  $('verif-resume').className = 'verif__resume';
+  $('verif-resume').textContent = t('verification_en_cours');
+  $('verif-liste').textContent = '';
+  $('btn-verifier').disabled = true;
+  $('btn-verifier-annuler').classList.remove('cache');
+  E.tache = { verification: true, demande: { bases: [] }, noms: [] };
+  bandeau('copie', t('verification_en_cours'), chemin);
+  try {
+    const b = await BACKEND.verifierDossier(chemin, LANGUE);
+    $('verif-resume').classList.add(b.conforme ? 'verif__resume--ok' : 'verif__resume--ko');
+    $('verif-resume').textContent = `${b.conforme ? t('verif_conforme') : t('verif_non_conforme')} — ${t('verif_resume', { ok: b.conformes, n: b.nb_fichiers, format: b.format })}`;
+    for (const [c, m] of b.problemes_texte || []) {
+      const li = el('li', 'remarque--alerte');
+      li.append(el('b', 'mono', c));
+      li.append(el('span', 'remarque__action', m));
+      $('verif-liste').append(li);
+    }
+    for (const x of b.inattendus || []) {
+      const li = el('li');
+      li.append(el('b', 'mono', x));
+      li.append(el('span', 'remarque__action', t('inattendus')));
+      $('verif-liste').append(li);
+    }
+    bandeau(b.conforme ? 'conforme' : 'alerte', b.conforme ? t('verif_conforme') : t('verif_non_conforme'), chemin);
+    son(b.conforme);
   } catch (e) {
-    etat.enCours = false;
-    $('btn-verifier').disabled = false;
-    etat.verdictAffiche = true;
-    bandeau({ etat: 'alerte', verdict: 'Vérification impossible', detail: String(e && e.message ? e.message : e) });
-    majAction();
+    $('verif-resume').classList.add('verif__resume--ko');
+    $('verif-resume').textContent = String(e);
+    bandeau('alerte', t('erreur'), String(e).split('\n')[0]);
+  }
+  E.tache = null;
+  E.dernier = { verification: true, demande: { bases: [] } };
+  $('btn-verifier').disabled = false;
+  $('btn-verifier-annuler').classList.add('cache');
+}
+
+/* ------------------------------------------------------- Historique */
+async function afficherHistorique() {
+  const tab = $('historique');
+  tab.textContent = '';
+  let liste = [];
+  try { liste = await BACKEND.registre(); } catch (_) { /* vide */ }
+  if (!liste.length) {
+    const tr = el('tr');
+    tr.append(el('td', 'vide', t('aucun_historique')));
+    tab.append(tr);
     return;
   }
-
-  etat.enCours = false;
-  $('btn-verifier').disabled = false;
-  if (!r) { majAction(); bandeauRepos(); return; }
-  afficherVerification(r);
-});
-
-function afficherVerification(r) {
-  etat.verdictAffiche = true;
-  const corps = $('journal-corps');
-  corps.textContent = '';
-  messageVide.classList.add('cache');
-  document.documentElement.style.setProperty('--colonnes-dest', '64px');
-  $('entete-dest').textContent = 'État';
-
-  const echecs = r.lignes.filter((l) => l.etat !== 'Ok');
-  let premier = null;
-
-  r.lignes.forEach((l) => {
-    const el = document.createElement('div');
-    el.className = 'ligne' + (l.etat === 'Ok' ? '' : ' ligne--echec');
-    el.innerHTML = `
-      <div class="ligne__fichier"></div>
-      <div class="ligne__clip"></div>
-      <div class="ligne__taille"></div>
-      <div class="ligne__etats"><span class="pastille" data-etat="${l.etat === 'Ok' ? 'ok' : 'echec'}">${l.etat === 'Ok' ? '✓' : '✕'}</span></div>`;
-    el.querySelector('.ligne__fichier').textContent = nomCourt(l.fichier);
-    el.querySelector('.ligne__clip').textContent = codeClip(l.fichier);
-    if (l.detail) {
-      const m = document.createElement('div');
-      m.className = 'ligne__motif';
-      m.textContent = l.detail;
-      el.appendChild(m);
-    }
-    corps.appendChild(el);
-    if (l.etat !== 'Ok' && !premier) premier = el;
-  });
-
-  const conforme = echecs.length === 0 && !r.residus.length;
-  const morceaux = [];
-  if (echecs.length) morceaux.push(`${echecs.length} fichiers en échec`);
-  if (r.absents.length) morceaux.push(`${r.absents.length} absents`);
-  if (r.en_trop.length) morceaux.push(`${r.en_trop.length} présents hors MHL`);
-  if (r.residus.length) morceaux.push(`${r.residus.length} copies interrompues`);
-
-  bandeau({
-    etat: conforme ? 'conforme' : 'alerte',
-    verdict: conforme ? 'Disque conforme' : 'Disque non conforme',
-    detail: conforme
-      ? `${r.lignes.length} fichiers relus et conformes au MHL.`
-      : morceaux.join(' · '),
-  });
-  $('pied-info').textContent = `${r.dossier} — ${r.lignes.length} fichiers listés au MHL`;
-  ['btn-dossier', 'btn-recommencer'].forEach((b) => $(b).classList.remove('cache'));
-  etat.rapport = { dossier_rapport: r.dossier, destinations: [{ dossier: r.dossier }], conforme };
-  if (premier) premier.scrollIntoView({ block: 'center' });
+  const tete = el('tr');
+  [t('date'), t('carte_col'), t('fichiers'), t('taille_col'), t('verdict'), t('destinations')].forEach((x) => tete.append(el('th', null, x)));
+  tab.append(tete);
+  for (const e of liste) {
+    const tr = el('tr');
+    tr.append(el('td', 'mono', new Date(e.date).toLocaleString(LANGUE)));
+    tr.append(el('td', null, e.carte));
+    tr.append(el('td', 'n', String(e.nb_fichiers)));
+    tr.append(el('td', 'n', octets(e.octets)));
+    const v = el('td', `verdict-${e.verdict}`, texteVerdict(e.verdict));
+    tr.append(v);
+    tr.append(el('td', 'mono petit', e.destinations.join('\n')));
+    tab.append(tr);
+  }
 }
 
-/* Accès de démonstration : rejoue un état complet pour relire l'interface. */
-window.__demo = async (nom, vitesse) => {
-  etat.source = await Backend.choisirCarte();
-  etat.disques = [await Backend.choisirDisque(), await Backend.choisirDisque()];
-  majSource(); majDisques(); journalPreparer();
-  if (nom === 'pret') return;
-  Backend.vitesse = vitesse || 40;
-  const scenarios = { echec: 'echec', lent: 'lent' };
-  await decharger(scenarios[nom]);
-};
-
-/* -------------------------------------------------- Glisser-déposer réel
-   Tauri remet les chemins des dossiers déposés, ainsi que la position du
-   curseur : un dossier lâché sur la zone carte devient la carte, lâché sur
-   la colonne des destinations il devient un disque. */
-if (window.__TAURI__) {
-  const dansZone = (id, p) => {
-    const r = $(id).getBoundingClientRect();
-    const f = window.devicePixelRatio || 1;
-    const x = p.x / f;
-    const y = p.y / f;
-    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-  };
-
-  window.__TAURI__.event.listen('tauri://drag-enter', () => document.body.classList.add('glisse'));
-  window.__TAURI__.event.listen('tauri://drag-leave', () => document.body.classList.remove('glisse'));
-  window.__TAURI__.event.listen('tauri://drag-drop', async (e) => {
-    document.body.classList.remove('glisse');
-    if (etat.enCours) return;
-    const chemin = (e.payload.paths || [])[0];
-    if (!chemin) return;
-
-    const surDestinations = dansZone('disques', e.payload.position)
-      || dansZone('ajouter', e.payload.position);
-
-    if (surDestinations && etat.source) {
-      const d = await Backend.choisirDisque(chemin);
-      if (d && !etat.disques.some((x) => x.chemin === d.chemin) && etat.disques.length < 3) {
-        etat.disques.push(d);
-        majDisques();
-      }
-    } else {
-      const c = await Backend.choisirCarte(chemin);
-      if (c) {
-        etat.source = c;
-        etat.rapport = null;
-        etat.verdictAffiche = false;
-        majSource();
-        majDisques();
-        journalPreparer();
-      }
-    }
-  });
+/* ------------------------------------------------------- Démarrage */
+function rafraichirTout() {
+  afficherDisques();
+  afficherTuiles();
+  afficherFile();
+  rendreJournal();
+  if (!E.tache && !E.dernier) majPret();
 }
 
-/* Essai automatique de bout en bout : OFFLOAD_AUTO="carte|disque1|disque2"
-   déclenche un déchargement complet au démarrage, sans passer par les
-   sélecteurs de dossier. Sert aux tests, jamais au fonctionnement normal. */
+async function suivreVolumes() {
+  try {
+    E.volumes = await BACKEND.volumes();
+    afficherTuiles();
+  } catch (_) { /* pas de liste : on réessaie */ }
+  setTimeout(suivreVolumes, 2500);
+}
+
+async function demarrer() {
+  if (!BACKEND) {
+    choisirLangue();
+    bandeau('alerte', t('pont_absent'), t('pont_absent_detail'));
+    document.querySelectorAll('button, input, select').forEach((b) => { b.disabled = true; });
+    return;
+  }
+  E.reglages = await BACKEND.reglagesLire();
+  choisirLangue(E.reglages.langue);
+  appliquerReglages();
+  lierReglages();
+  try {
+    const i = await BACKEND.infos();
+    $('version').textContent = `v${i.version}${BACKEND.reel ? '' : ' · démo'}`;
+    $('a-propos').textContent = `SuperLoc Offload ${i.version} — ${i.os}. Gratuit, sans compte, sans connexion : aucune donnée ne quitte cet ordinateur.`;
+  } catch (_) { /* rien */ }
+
+  document.querySelectorAll('.onglet').forEach((o) => o.addEventListener('click', () => montrerVue(o.dataset.vue)));
+  $('carte-vide').addEventListener('click', async () => { const c = await BACKEND.choisirDossier(); if (c) choisirSource(c); });
+  $('carte-changer').addEventListener('click', oublierSource);
+  $('carte-nom').addEventListener('input', majApercu);
+  $('ajouter').addEventListener('click', () => ajouterDisque());
+  $('btn-decharger').addEventListener('click', surDecharger);
+  $('btn-annuler').addEventListener('click', () => BACKEND.annuler());
+  $('btn-verifier').addEventListener('click', verifierUnDossier);
+  $('btn-verifier-annuler').addEventListener('click', () => BACKEND.annuler());
+  $('analyse-fermer').addEventListener('click', () => $('analyse').classList.add('cache'));
+  $('btn-nouvelle').addEventListener('click', nouvelleCopie);
+  $('btn-rapport').addEventListener('click', () => E.dernier && E.dernier.dossier && BACKEND.ouvrir(`${E.dernier.dossier}${E.dernier.dossier.includes('\\') ? '\\' : '/'}_offload${E.dernier.dossier.includes('\\') ? '\\' : '/'}rapport.html`));
+  $('btn-dossier').addEventListener('click', () => E.dernier && E.dernier.dossier && BACKEND.ouvrir(E.dernier.dossier));
+  $('btn-ejecter').addEventListener('click', async () => {
+    if (!E.dernier || !E.dernier.demande.source) return;
+    try { await BACKEND.ejecter(E.dernier.demande.source); $('pied-info').textContent = t('ejection_ok'); } catch (e) { $('pied-info').textContent = t('ejection_ko', { e: String(e) }); }
+  });
+
+  await BACKEND.ecouter('offload://evenement', surEvenement);
+  await BACKEND.ecouter('offload://verification', (p) => {
+    if (E.tache && E.tache.verification) {
+      progression(p.total ? p.octets / p.total : p.index / Math.max(1, p.nb_fichiers));
+      $('detail').textContent = `${t('fichier_n', { i: p.index + 1, n: p.nb_fichiers })} · ${p.chemin}`;
+    }
+  });
+  await BACKEND.surDepot((chemins) => {
+    if (!chemins.length || E.tache) return;
+    if (!E.source) choisirSource(chemins[0]);
+    else chemins.forEach((c) => ajouterDisque(c));
+  });
+
+  if (!E.reglages.avertissement_accepte) {
+    const d = $('dialogue-avertissement');
+    d.showModal();
+    $('btn-accepter').addEventListener('click', () => {
+      E.reglages.avertissement_accepte = true;
+      sauver();
+      d.close();
+    });
+  }
+
+  majApercu();
+  rafraichirTout();
+  suivreVolumes();
+
+  PRET.ouvrir();
+}
+
+// Essai automatique de bout en bout (OFFLOAD_AUTO), réservé aux tests.
+// Défini d'emblée : l'appel peut arriver avant la fin du démarrage.
+const PRET = (() => {
+  let ouvrir;
+  const p = new Promise((r) => { ouvrir = r; });
+  p.ouvrir = ouvrir;
+  return p;
+})();
 window.__essai = async (carte, disques) => {
-  etat.source = await Backend.choisirCarte(carte);
-  etat.disques = [];
-  for (const d of disques) {
-    const disque = await Backend.choisirDisque(d);
-    if (disque) etat.disques.push(disque);
-  }
-  majSource();
-  majDisques();
-  journalPreparer();
-  await decharger();
+    await PRET;
+    E.reglages.destinations = disques;
+    E.reglages.actives = disques.slice();
+    await choisirSource(carte);
+    E.apercus = await BACKEND.apercu({ bases: disques, gabarit: E.reglages.gabarit || '', valeurs: valeursNommage() });
+    lancer(demandeCourante());
 };
+
+demarrer();

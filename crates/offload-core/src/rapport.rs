@@ -228,6 +228,38 @@ impl Remarque {
     }
 }
 
+/// Nom court de chaque destination : le nom du disque, complété du dossier
+/// de base quand plusieurs destinations sont sur le même disque (ou quand le
+/// disque n'a pas de nom lisible, comme « / »).
+pub fn noms_affiches(dossiers: &[std::path::PathBuf], volumes: &[Option<Volume>]) -> Vec<String> {
+    let brut: Vec<String> = volumes
+        .iter()
+        .map(|v| v.as_ref().map(|v| v.nom.clone()).unwrap_or_default())
+        .collect();
+    dossiers
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let base = d
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| d.display().to_string());
+            let nom = brut.get(i).cloned().unwrap_or_default();
+            let ambigu = nom.is_empty()
+                || nom == "/"
+                || nom.ends_with(':')
+                || nom.ends_with(":\\")
+                || brut.iter().filter(|x| **x == nom).count() > 1;
+            match (nom.is_empty() || nom == "/", ambigu) {
+                (true, _) => base,
+                (false, true) => format!("{nom} — {base}"),
+                (false, false) => nom,
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Rapport {
     pub outil: String,
@@ -264,13 +296,14 @@ pub struct Rapport {
 
 impl Rapport {
     pub fn noms_destinations(&self) -> Vec<String> {
-        self.destinations
+        let dossiers: Vec<std::path::PathBuf> = self
+            .destinations
             .iter()
-            .map(|d| match &d.volume {
-                Some(v) if !v.nom.is_empty() => v.nom.clone(),
-                _ => d.dossier.clone(),
-            })
-            .collect()
+            .map(|d| d.dossier.clone().into())
+            .collect();
+        let volumes: Vec<Option<Volume>> =
+            self.destinations.iter().map(|d| d.volume.clone()).collect();
+        noms_affiches(&dossiers, &volumes)
     }
 
     pub fn duree_s(&self) -> f64 {

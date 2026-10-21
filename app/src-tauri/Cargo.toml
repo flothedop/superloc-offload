@@ -1,9 +1,10 @@
 [package]
 name = "superloc-offload"
-version.workspace = true
-edition = "2021"
 description = "Copie et vérification de rushs"
-authors = ["SuperLoc"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -12,11 +13,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 offload-core = { path = "../../crates/offload-core" }
-fs4 = "0.13"
 chrono = "0.4"
+keepawake = "0.6"
 
 [features]
 default = ["custom-protocol"]

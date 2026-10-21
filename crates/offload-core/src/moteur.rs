@@ -1075,15 +1075,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
         .map_err(|erreurs| Refus { erreurs })?;
 
     let volume_source = volume::du_chemin(&opts.source);
-    let noms: Vec<String> = opts
-        .destinations
-        .iter()
-        .zip(&controle.volumes)
-        .map(|(d, v)| match v {
-            Some(v) if !v.nom.is_empty() => v.nom.clone(),
-            _ => d.display().to_string(),
-        })
-        .collect();
+    let noms = crate::rapport::noms_affiches(&opts.destinations, &controle.volumes);
 
     // Garde le poste éveillé pendant la copie : délégué à l'appelant (CLI,
     // application), qui possède le cycle de vie.
@@ -1529,7 +1521,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
                 })
                 .count();
             DestinationRapport {
-                dossier: dossier.display().to_string(),
+                dossier: controle::absolu(dossier).display().to_string(),
                 volume: controle.volumes[i].clone(),
                 erreur_fatale: b.erreur_fatale.clone(),
                 fichiers_ok: ok,
@@ -1550,7 +1542,7 @@ pub fn decharger(opts: &Options, rappel: &mut dyn FnMut(Evenement)) -> Result<Ra
         outil: OUTIL.into(),
         version: VERSION.into(),
         nom: opts.nom.clone(),
-        source: opts.source.display().to_string(),
+        source: controle::absolu(&opts.source).display().to_string(),
         volume_source,
         debut,
         fin,

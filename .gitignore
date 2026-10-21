@@ -3,8 +3,8 @@
 **/*.rs.bk
 
 # Tauri
-/src-tauri/gen
-/src-tauri/target
+/app/src-tauri/gen
+/app/src-tauri/target
 
 # Node
 node_modules

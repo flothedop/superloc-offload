@@ -1,256 +1,121 @@
-/* ==========================================================================
-   Pont vers le moteur.
-   Dans l'application, les appels partent vers le code Rust via Tauri.
-   Hors application (navigateur), un simulateur prend le relais : il sert à
-   travailler l'interface et à la relire sans carte ni disque.
-   ========================================================================== */
+/* Pont vers le moteur.
+ *
+ * Dans l'application, tout passe par Tauri. Hors de l'application (aperçu
+ * dans un navigateur), le simulateur n'est activé QUE si l'adresse contient
+ * « ?demo » : sinon l'interface affiche une erreur franche. Un simulateur
+ * qui répondrait « conforme » en silence serait la pire panne possible. */
+'use strict';
 
-const Backend = (() => {
-  const passerelle = typeof window !== 'undefined' && window.__TAURI__;
-  // Présent dès qu'on s'exécute dans l'application, même si la passerelle
-  // publique n'est pas exposée.
-  const dansApplication = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
-
-  if (dansApplication && !passerelle) {
-    // Cas critique : on est bien dans l'application, mais le pont vers le
-    // moteur manque. Simuler ici afficherait un « Copie conforme » alors
-    // qu'aucun fichier n'aurait été copié. On refuse de démarrer.
-    const erreur = "Le pont vers le moteur de copie est absent : l'application ne peut pas fonctionner.";
-    document.addEventListener('DOMContentLoaded', () => {
-      document.body.innerHTML =
-        '<div style="padding:40px;font-family:sans-serif;color:#ff9a92;background:#14181a;height:100%">'
-        + '<h1 style="font-size:24px">Application inutilisable</h1><p>' + erreur + '</p>'
-        + '<p>Ne pas s\'en servir pour décharger une carte.</p></div>';
-    });
-    const refus = () => Promise.reject(new Error(erreur));
+const BACKEND = (() => {
+  const tauri = window.__TAURI__;
+  if (tauri && tauri.core) {
+    const inv = (cmd, args) => tauri.core.invoke(cmd, args || {});
     return {
-      simule: false, enPanne: true,
-      choisirCarte: refus, choisirDisque: refus, decharger: refus,
-      verifierDossier: refus, ouvrirDossier: refus,
+      reel: true,
+      reglagesLire: () => inv('reglages_lire'),
+      reglagesEcrire: (r) => inv('reglages_ecrire', { reglages: r }),
+      volumes: () => inv('volumes'),
+      analyserSource: (chemin) => inv('analyser_source', { chemin }),
+      apercu: (demande) => inv('apercu', { demande }),
+      choisirDossier: () => inv('choisir_dossier'),
+      decharger: (demande) => inv('decharger', { demande }),
+      annuler: () => inv('annuler'),
+      verifierDossier: (chemin, langue) => inv('verifier_dossier', { chemin, langue }),
+      registre: () => inv('registre_lire'),
+      ouvrir: (chemin) => inv('ouvrir', { chemin }),
+      ejecter: (chemin) => inv('ejecter', { chemin }),
+      infos: () => inv('infos'),
+      ecouter: (nom, f) => tauri.event.listen(nom, (e) => f(e.payload)),
+      surDepot: (f) => tauri.event.listen('tauri://drag-drop', (e) => f((e.payload && e.payload.paths) || [])),
+      notifier: async (titre, corps) => {
+        try {
+          const n = tauri.notification;
+          if (n) {
+            let ok = await n.isPermissionGranted();
+            if (!ok) ok = (await n.requestPermission()) === 'granted';
+            if (ok) n.sendNotification({ title: titre, body: corps });
+            return;
+          }
+          await inv('plugin:notification|notify', { options: { title: titre, body: corps } });
+        } catch (_) { /* une notification manquée n'est pas grave */ }
+      },
     };
   }
 
-  // ----------------------------------------------------------------- Tauri
-  const reel = {
-    simule: false,
-    choisirCarte: (chemin) => window.__TAURI__.core.invoke('choisir_carte', { chemin: chemin || null }),
-    choisirDisque: (chemin) => window.__TAURI__.core.invoke('choisir_disque', { chemin: chemin || null }),
-    ouvrirDossier: (c) => window.__TAURI__.core.invoke('ouvrir_dossier', { chemin: c }),
-    async decharger(opts, h) {
-      const off = [];
-      off.push(await window.__TAURI__.event.listen('offload://fichier', (e) => h.onFichier(e.payload)));
-      off.push(await window.__TAURI__.event.listen('offload://octets', (e) => h.onOctets(e.payload)));
-      off.push(await window.__TAURI__.event.listen('offload://debit', (e) => h.onDebit(e.payload)));
-      off.push(await window.__TAURI__.event.listen('offload://diagnostic', (e) => h.onDiagnostic(e.payload)));
-      off.push(await window.__TAURI__.event.listen('offload://resultat', (e) => h.onResultat(e.payload)));
-      try {
-        return await window.__TAURI__.core.invoke('decharger', { options: opts });
-      } finally {
-        off.forEach((f) => f());
-      }
-    },
-    verifierDossier: (chemin) => window.__TAURI__.core.invoke('verifier_dossier', { chemin: chemin || null }),
-  };
+  if (!new URLSearchParams(location.search).has('demo')) return null;
+  return simulateur();
+})();
 
-  // ------------------------------------------------------------ Simulateur
-  const Go = 1000 * 1000 * 1000;
+/* ------------------------------------------------------------ Simulateur */
+function simulateur() {
+  const ecouteurs = {};
+  const emettre = (nom, p) => (ecouteurs[nom] || []).forEach((f) => f(p));
+  let annule = false;
+  let reglages = { langue: '', operateur: 'Flo', email: '', projet: 'Pub Lille', jour: '2', camera: 'A', lieu: '',
+    gabarit: '{date}_{carte}', destinations: ['/Volumes/SSD_PROD/Rushs', '/Volumes/BACKUP/Rushs'],
+    actives: ['/Volumes/SSD_PROD/Rushs', '/Volumes/BACKUP/Rushs'], mode: 'complet', algos: ['xxh128', 'xxh64'],
+    mhl_v1: true, son: false, notification: false, ejecter: false, avertissement_accepte: true };
+  const vol = (nom, fs, total, libre, amovible, disque) => ({ point_montage: `/Volumes/${nom}`, nom, systeme_fichiers: fs, amovible, reseau: false, total, libre, id_volume: nom, id_disque: disque });
+  const volumes = [
+    { ...vol('A001', 'exfat', 512e9, 60e9, true, 'disk4'), camera: 'RED' },
+    { ...vol('SSD_PROD', 'apfs', 2e12, 1.2e12, true, 'disk5'), camera: null },
+    { ...vol('BACKUP', 'exfat', 4e12, 2.9e12, true, 'disk6'), camera: null },
+  ];
+  const fichiers = [];
+  for (let c = 1; c <= 6; c++) for (let s = 1; s <= 3; s++) fichiers.push({ chemin: `A001_1021XY.RDM/A001_C00${c}_1021XY.RDC/A001_C00${c}_1021XY_00${s}.R3D`, taille: 4.1e9 });
+  const mode = new URLSearchParams(location.search).get('demo');
+  const total = fichiers.reduce((a, f) => a + f.taille, 0);
   const attendre = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  function carteFactice() {
-    const fichiers = [];
-    // Douze plans RED : chaque plan est un dossier .RDC découpé en segments.
-    for (let c = 1; c <= 12; c++) {
-      const clip = `A001_C${String(c).padStart(3, '0')}_0922JK.RDC`;
-      const segments = c % 4 === 0 ? 5 : c % 3 === 0 ? 4 : 3;
-      for (let s = 1; s <= segments; s++) {
-        fichiers.push({
-          chemin: `${clip}/A001_C${String(c).padStart(3, '0')}_0922JK_${String(s).padStart(3, '0')}.R3D`,
-          clip,
-          taille: 8 * Go + (s * 137 * 1000 * 1000) % (2 * Go),
-        });
+  return {
+    reel: false,
+    reglagesLire: async () => reglages,
+    reglagesEcrire: async (r) => { reglages = r; },
+    volumes: async () => volumes,
+    analyserSource: async (chemin) => ({ chemin, nom: 'A001', nb_fichiers: fichiers.length, octets: total, nb_clips: 6, dossiers_vides: 0, camera: 'RED', volume: volumes[0], exclus: 3, illisibles: [], segments_manquants: [], deja: mode === 'deja' ? [{ date: '2026-10-20T18:04:00Z', carte: 'A001', verdict: 'bon-a-formater', destinations: ['/Volumes/SSD_PROD/Rushs/2026-10-20_A001'] }] : [] }),
+    apercu: async (d) => d.bases.map((b) => ({ base: b, dossier: `${b}/2026-10-22_A001`, volume: volumes.find((v) => b.startsWith(v.point_montage)) || null, existe_base: true })),
+    choisirDossier: async () => '/Volumes/RAID/Rushs',
+    decharger: async (demande) => {
+      annule = false;
+      const n = demande.bases.length;
+      emettre('offload://evenement', { type: 'phase', phase: 'inventaire' });
+      await attendre(300);
+      emettre('offload://evenement', { type: 'debut', nom: demande.nom, nb_fichiers: fichiers.length, octets: total, nb_clips: 6, destinations: demande.bases, volumes: demande.bases.map((b) => volumes.find((v) => b.startsWith(v.point_montage))) });
+      emettre('offload://evenement', { type: 'phase', phase: 'copie' });
+      const debits = [1450e6, 380e6, 940e6];
+      const etapes = mode === 'lent' ? 60 : 40;
+      for (let k = 1; k <= etapes && !annule; k++) {
+        await attendre(70);
+        const f = k / etapes;
+        const index = Math.min(fichiers.length - 1, Math.floor(f * fichiers.length));
+        emettre('offload://evenement', { type: 'avancement', lus: total * Math.min(1, f * 1.15), total, debit_lecture: 1.4e9, index, nb_fichiers: fichiers.length, chemin: fichiers[index].chemin, ecoule_s: k * 9, restant_s: (etapes - k) * 9,
+          destinations: Array.from({ length: n }, (_, i) => ({ ecrits: total * Math.min(1, f * (i ? 0.9 : 1.1)), relus: total * Math.max(0, f * 0.95 - 0.05), debit: mode === 'lent' && i === 1 ? 36e6 : debits[i % 3], fichiers_ok: index, fichiers_echec: 0, en_panne: false, termine: false })) });
+        if (k % 2 === 0) for (let i = 0; i < n; i++) {
+          const echec = mode === 'echec' && i === 1 && index === 7;
+          emettre('offload://evenement', { type: 'copie', destination: i, index, chemin: fichiers[index].chemin, niveau: echec ? 'echec' : 'support', erreur: echec ? { code: 'empreinte-differente', detail: '' } : null, message: echec ? 'La copie ne correspond pas à la carte (empreinte différente)' : undefined, action: echec ? 'Ne pas formater la carte. Recommencer vers un nouveau dossier.' : undefined });
+        }
+        if (mode === 'lent' && k === 20) emettre('offload://evenement', { type: 'diagnostic', lent: true, goulot: { destination: 1 }, faits: ['La copie a attendu BACKUP pendant 71 % du temps (2 min). C\'est ce disque qui donne le rythme.', 'BACKUP : 36,0 Mo/s en moyenne à l\'écriture.', 'BACKUP est formaté en exfat.'], hypotheses: [{ titre: 'Le disque est peut-être branché sur un port USB 2', parce_que: 'le débit plafonne à 36,0 Mo/s et reste très régulier', verifier: 'Rebrancher sur un autre port, de préférence marqué SS ou bleu, et comparer le débit affiché.' }] });
       }
-      fichiers.push({ chemin: `${clip}/A001_C${String(c).padStart(3, '0')}_0922JK.RMD`, clip, taille: 24 * 1024 });
-    }
-    const octets = fichiers.reduce((t, f) => t + f.taille, 0);
-    return {
-      nom: 'A001_0922JK',
-      chemin: '/Volumes/A001_0922JK',
-      structure: 'RED · KOMODO',
-      clips: 12,
-      fichiers,
-      octets,
-    };
-  }
-
-  function diagnosticFactice(opts) {
-    const lentNom = opts.destinations[1] ? opts.destinations[1].nom : 'disque 2';
-    return {
-      lent: true,
-      goulot: { Destination: 1 },
-      faits: [
-        `La copie a attendu ${lentNom} pendant 71 % du temps (4 min). C'est ce disque qui donne le rythme.`,
-        `${opts.destinations[0].nom} : 470 Mo/s en moyenne à l'écriture.`,
-        `${lentNom} : 37.0 Mo/s en moyenne à l'écriture.`,
-        `${lentNom} est formaté en exfat.`,
-        `Vérification comprise : chaque octet est écrit puis relu depuis le support (2 min de relecture sur ${lentNom}).`,
-      ],
-      hypotheses: [
-        {
-          titre: 'Le disque est peut-être branché sur un port USB 2',
-          parce_que:
-            'le débit plafonne à 37.0 Mo/s et reste très régulier, ce qui correspond au plafond pratique de l\'USB 2',
-          verifier:
-            'Rebrancher sur un autre port, de préférence marqué SS ou bleu, et comparer le débit affiché.',
-        },
-      ],
-    };
-  }
-
-  let compteurDisques = 0;
-  const disquesFactices = [
-    { nom: 'RAID_TOURNAGE', chemin: '/Volumes/RAID_TOURNAGE', total: 8000 * Go, libre: 5120 * Go },
-    { nom: 'BACKUP_PROD', chemin: '/Volumes/BACKUP_PROD', total: 4000 * Go, libre: 1340 * Go },
-    { nom: 'SSD_MONTAGE', chemin: '/Volumes/SSD_MONTAGE', total: 2000 * Go, libre: 210 * Go },
-  ];
-
-  const simule = {
-    simule: true,
-    vitesse: 1,
-    async choisirCarte() {
-      await attendre(120);
-      return carteFactice();
+      emettre('offload://evenement', { type: 'phase', phase: 'rapports' });
+      await attendre(200);
+      const verdict = annule ? 'annule' : mode === 'echec' ? 'echec' : n >= 2 ? 'bon-a-formater' : 'conforme-ne-pas-formater';
+      const remarques = verdict === 'echec' ? ['BACKUP : copie en échec.'] : n < 2 ? ['Une seule copie vérifiée : il en faut deux, sur deux disques différents, avant de formater la carte.'] : [];
+      return { issue: 'rapport', noms: demande.bases.map((b) => b.split('/')[2]), remarques, problemes: verdict === 'echec' ? [{ chemin: fichiers[7].chemin, destination: 1, message: 'La copie ne correspond pas à la carte (empreinte différente)', action: 'Ne pas formater la carte. Recommencer vers un nouveau dossier ; si l\'erreur revient sur le même disque, changer de câble puis de disque.' }] : [],
+        rapport: { verdict, annule, nb_fichiers: fichiers.length, octets: total, nb_clips: 6, debut: new Date(Date.now() - 360000).toISOString(), fin: new Date().toISOString(),
+          destinations: demande.bases.map((b, i) => ({ dossier: `${b}/2026-10-22_A001`, fichiers_ok: fichiers.length - (verdict === 'echec' && i === 1 ? 1 : 0), fichiers_echec: verdict === 'echec' && i === 1 ? 1 : 0, profil: { debit_moyen: debits[i % 3] }, erreur_fatale: null })) },
+        ejection: null };
     },
-    async choisirDisque() {
-      await attendre(120);
-      return disquesFactices[compteurDisques++ % disquesFactices.length];
+    annuler: async () => { annule = true; return true; },
+    verifierDossier: async (chemin) => {
+      for (let i = 0; i < 18; i++) { await attendre(40); emettre('offload://verification', { index: i, nb_fichiers: 18, chemin: fichiers[i].chemin, octets: i * 4.1e9, total }); }
+      return { dossier: chemin, format: 'ascmhl', manifestes: ['ascmhl/0001_A001_2026-10-21_091512Z.mhl'], nb_fichiers: 18, octets: total, conformes: 18, problemes: [], inattendus: [], conforme: true, problemes_texte: [], annule: false };
     },
-    estReel: false,
-    async ouvrirDossier() {},
-
-    /** Rejoue un déchargement : débits par disque, échecs, diagnostic. */
-    async decharger(opts, h) {
-      const { fichiers } = opts.source;
-      const nbDest = opts.destinations.length;
-      const total = fichiers.reduce((t, f) => t + f.taille, 0);
-      const pas = Math.max(1, Math.round(6 / this.vitesse));
-      let copies = 0;
-      const resultats = [];
-
-      // Débits simulés : le second disque plafonne comme un lien USB 2.
-      const lent = opts.scenario === 'lent';
-      const debitNominal = (d) => (d === 0 ? 470e6 : lent ? 37e6 : 320e6);
-      const faits = new Array(nbDest).fill(0);
-      const retard = [];
-      const courbes = new Array(nbDest).fill(0).map(() => []);
-
-      const remonterDebits = () => {
-        for (let d = 0; d < nbDest; d++) {
-          // Un peu de bruit, et davantage sur un disque qui peine.
-          const bruit = lent && d === 1 ? 0.12 : 0.05;
-          const debit = debitNominal(d) * (1 + (Math.random() - 0.5) * bruit * 2);
-          courbes[d].push(debit);
-          h.onDebit({ destination: d, debit, cumul: copies, fichiers_faits: faits[d] });
-        }
-      };
-
-      for (let i = 0; i < fichiers.length; i++) {
-        const f = fichiers[i];
-        h.onFichier({ index: i, total: fichiers.length, chemin: f.chemin });
-        for (let p = 1; p <= pas; p++) {
-          await attendre(16 / this.vitesse);
-          h.onOctets({
-            copies: copies + (f.taille * p) / pas,
-            total,
-            debit: 480e6 * (1 + (Math.random() - 0.5) * 0.1),
-          });
-          remonterDebits();
-        }
-        copies += f.taille;
-
-        for (let d = 0; d < nbDest; d++) {
-          const casse = opts.scenario === 'echec' && d === 1 && i >= 9;
-          const etat = casse ? 'echec' : 'ok';
-          const r = {
-            destination: d,
-            index: i,
-            chemin: f.chemin,
-            etat,
-            motif: casse
-              ? `${opts.destinations[1].nom} : écriture impossible (périphérique absent)`
-              : null,
-          };
-          resultats.push(r);
-          // Le disque lent prend visiblement du retard : c'est exactement ce
-          // que le découplage permet, chacun avance à son rythme.
-          if (lent && d === 1) {
-            retard.push(r);
-          } else {
-            if (!casse) faits[d] += 1;
-            h.onResultat(r);
-          }
-        }
-        if (lent && i % 3 === 2) {
-          const r = retard.shift();
-          if (r) {
-            faits[1] += 1;
-            h.onResultat(r);
-          }
-        }
-
-        // Le diagnostic apparaît en cours de copie, pas seulement à la fin.
-        if (lent && i === 6) h.onDiagnostic(diagnosticFactice(opts));
-      }
-
-      // Le disque lent finit sa file après la fin de la lecture de la carte.
-      while (retard.length) {
-        const r = retard.shift();
-        faits[1] += 1;
-        h.onResultat(r);
-        h.onDebit({ destination: 1, debit: debitNominal(1), cumul: copies, fichiers_faits: faits[1] });
-        await attendre(40 / this.vitesse);
-      }
-
-      const echecs = resultats.filter((r) => r.etat === 'echec');
-      return {
-        conforme: echecs.length === 0,
-        nb_fichiers: fichiers.length,
-        nb_clips: opts.source.clips,
-        octets_total: total,
-        debit_source: 480e6,
-        destinations: opts.destinations.map((d, i) => ({
-          nom: d.nom,
-          dossier: `${d.chemin}/${opts.source.nom}`,
-          conforme: !echecs.some((e) => e.destination === i),
-          fichiers_ok: faits[i],
-          fichiers_echec: echecs.filter((e) => e.destination === i).length,
-          debit_moyen: debitNominal(i),
-          systeme_fichiers: i === 1 ? 'exfat' : 'apfs',
-        })),
-        avertissements: [],
-        diagnostic: lent ? diagnosticFactice(opts) : { lent: false, faits: [], hypotheses: [] },
-      };
-    },
-
-    async verifierDossier() {
-      await attendre(500);
-      const carte = carteFactice();
-      return {
-        dossier: '/Volumes/RAID_TOURNAGE/A001_0922JK',
-        mhls: ['A001_0922JK_2026-09-22_183012.mhl'],
-        lignes: carte.fichiers.map((f, i) => ({
-          fichier: f.chemin,
-          etat: i === 14 ? 'Echec' : 'Ok',
-          detail: i === 14
-            ? 'empreinte xxhash64 différente : 3f2ab9c710de4455 à la destination contre ae2ac11508e8286b au MHL'
-            : null,
-        })),
-        absents: [],
-        en_trop: [],
-        residus: [],
-        etat: 'Echec',
-      };
-    },
+    registre: async () => [{ date: '2026-10-21T19:02:00Z', carte: 'A001', nb_fichiers: 18, octets: total, destinations: ['/Volumes/SSD_PROD/Rushs/2026-10-21_A001', '/Volumes/BACKUP/Rushs/2026-10-21_A001'], verdict: 'bon-a-formater' }, { date: '2026-10-21T14:40:00Z', carte: 'B002', nb_fichiers: 212, octets: 512e9, destinations: ['/Volumes/SSD_PROD/Rushs/2026-10-21_B002'], verdict: 'conforme-ne-pas-formater' }],
+    ouvrir: async () => {},
+    ejecter: async () => {},
+    infos: async () => ({ version: '0.2.0', os: 'macos' }),
+    ecouter: async (nom, f) => { (ecouteurs[nom] = ecouteurs[nom] || []).push(f); return () => {}; },
+    surDepot: async () => () => {},
+    notifier: async () => {},
   };
-
-  return passerelle ? reel : simule;
-})();
+}
