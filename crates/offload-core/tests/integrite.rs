@@ -93,13 +93,27 @@ fn chemins(r: &Rapport) -> Vec<&str> {
     r.fichiers.iter().map(|f| f.chemin.as_str()).collect()
 }
 
+/// Compare deux instantanés et nomme la première différence.
+fn inchangee(dossier: &Path, avant: &[(String, Vec<u8>, SystemTime)]) {
+    let apres = instantane(dossier);
+    let noms =
+        |v: &[(String, Vec<u8>, SystemTime)]| v.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+    assert_eq!(noms(&apres), noms(avant), "la carte a changé (entrées)");
+    for (a, b) in avant.iter().zip(&apres) {
+        assert!(a.1 == b.1, "la carte a changé : contenu de {}", a.0);
+        assert_eq!(a.2, b.2, "la carte a changé : date de {}", a.0);
+    }
+}
+
 fn instantane(dossier: &Path) -> Vec<(String, Vec<u8>, SystemTime)> {
     let mut v: Vec<_> = walkdir::WalkDir::new(dossier)
         .sort_by_file_name()
         .into_iter()
         .filter_map(|e| e.ok())
         .map(|e| {
-            let m = e.metadata().unwrap();
+            // Métadonnées lues sur le fichier lui-même : sous Windows, celles
+            // de l'énumération du dossier sont une copie qui peut être en retard.
+            let m = fs::symlink_metadata(e.path()).unwrap();
             let contenu = if m.is_file() {
                 fs::read(e.path()).unwrap()
             } else {
@@ -139,7 +153,7 @@ fn copie_conforme_complete_vers_deux_destinations() {
     let (r, ev) = lancer(&options(&source, &dests));
 
     // La carte n'a pas été touchée.
-    assert_eq!(instantane(&source), avant, "la carte a été modifiée");
+    inchangee(&source, &avant);
 
     assert_eq!(r.nb_fichiers, 5, "{:?}", chemins(&r));
     assert!(r.exclus.iter().any(|e| e == ".Spotlight-V100"));
@@ -574,16 +588,26 @@ fn destination_sur_le_volume_de_la_carte_refusee() {
     let avant = instantane(&source);
     let mut o = options(&source, &[source.join("../SAUVEGARDE/X")]);
     o.meme_volume_que_la_source = false;
-    let refus = decharger(&o, &mut |_| {}).unwrap_err();
-    assert!(refus
-        .erreurs
-        .iter()
-        .any(|e| e.code == Code::DestinationSurLaCarte));
+    let refus = match decharger(&o, &mut |_| {}) {
+        Err(r) => r,
+        Ok(r) => panic!(
+            "copie acceptée sur le volume de la carte : source {:?}, destination {:?}",
+            r.volume_source, r.destinations[0].volume
+        ),
+    };
+    assert!(
+        refus
+            .erreurs
+            .iter()
+            .any(|e| e.code == Code::DestinationSurLaCarte),
+        "{:?}",
+        refus.erreurs
+    );
     assert!(!refus
         .erreurs
         .iter()
         .any(|e| e.code == Code::CreationImpossible));
-    assert_eq!(instantane(&source), avant);
+    inchangee(&source, &avant);
     assert!(!t.path().join("SAUVEGARDE").exists());
 }
 

@@ -70,8 +70,9 @@ pub fn appliquer_date(f: &File, modifie: SystemTime) -> io::Result<()> {
     f.set_modified(modifie)
 }
 
-/// Applique une date de modification à un dossier.
-pub fn appliquer_date_dossier(dossier: &Path, modifie: SystemTime) -> io::Result<()> {
+/// Applique une date de modification à un fichier ou un dossier, par une
+/// poignée ouverte pour les seuls attributs.
+pub fn appliquer_date_chemin(dossier: &Path, modifie: SystemTime) -> io::Result<()> {
     #[cfg(windows)]
     let f = {
         use std::os::windows::fs::OpenOptionsExt;
@@ -442,7 +443,12 @@ mod tests {
         appliquer_date(&f, date).unwrap();
         drop(f);
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), date);
-        appliquer_date_dossier(d.path(), date).unwrap();
+        // Fichier écrit puis fermé, daté ensuite par le chemin.
+        let p2 = d.path().join("b");
+        std::fs::write(&p2, b"rush").unwrap();
+        appliquer_date_chemin(&p2, date).unwrap();
+        assert_eq!(std::fs::metadata(&p2).unwrap().modified().unwrap(), date);
+        appliquer_date_chemin(d.path(), date).unwrap();
         assert_eq!(
             std::fs::metadata(d.path()).unwrap().modified().unwrap(),
             date

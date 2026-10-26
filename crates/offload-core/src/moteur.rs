@@ -762,13 +762,16 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
                         }
                     }
                 }
-                // La date de la carte, après la dernière écriture.
+                // La date de la carte, posée APRÈS la fermeture du fichier
+                // écrit, par une poignée qui ne modifie que les attributs :
+                // sous Windows, NTFS peut remettre à jour la date de
+                // modification à la fermeture d'une poignée qui a écrit.
+                e.fichier = None;
                 if e.erreur.is_none() {
-                    if let (Some(f), Some(m)) = (e.fichier.as_ref(), modifie) {
-                        let _ = es::appliquer_date(f, SystemTime::from(m));
+                    if let Some(m) = modifie {
+                        let _ = es::appliquer_date_chemin(&e.temp, SystemTime::from(m));
                     }
                 }
-                e.fichier = None;
 
                 // La lecture de la carte et ses empreintes.
                 let source = promesse.attendre(&ctx.annulation);
@@ -858,7 +861,7 @@ fn fil_destination(ctx: Contexte, rx: Receiver<VersDestination>) -> Bilan {
             let p = joindre(&ctx.racine, &x.chemin);
             es::synchroniser_dossier(&p);
             if let Some(m) = x.modifie {
-                let _ = es::appliquer_date_dossier(&p, SystemTime::from(m));
+                let _ = es::appliquer_date_chemin(&p, SystemTime::from(m));
             }
         }
         es::synchroniser_dossier(&ctx.racine);

@@ -253,7 +253,10 @@ pub fn inventorier(racine: &Path) -> Result<Inventaire, Erreur> {
             inv.liens.push(relatif);
             continue;
         }
-        let meta = match entree.metadata() {
+        // Lues sur l'entrée elle-même : sous Windows, les métadonnées de
+        // l'énumération du dossier sont une copie que NTFS met à jour en
+        // différé (dates de dossiers en retard).
+        let meta = match std::fs::symlink_metadata(entree.path()) {
             Ok(m) => m,
             Err(e) => {
                 inv.illisibles
