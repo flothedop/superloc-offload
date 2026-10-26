@@ -653,10 +653,20 @@ fn echec_decriture_du_rapport_pris_en_compte() {
     let d = vec![t.path().join("d1/X"), t.path().join("d2/X")];
     let mut o = options(&s, &d);
     // Un fichier « _offload » apparaît sur la destination 1 pendant la copie.
+    // La lecture de la carte peut devancer la création du dossier de
+    // destination (la carte d'essai tient entière dans les tampons) : on
+    // attend que le dossier existe avant de poser le bouchon.
+    let racine = d[1].clone();
     let gene = d[1].join("_offload");
     o.fautes.apres_bloc_source = Some(Arc::new(move |rel: &str, _| {
         if rel.ends_with(".wav") && !gene.exists() {
-            let _ = fs::write(&gene, b"bouchon");
+            for _ in 0..1000 {
+                if racine.is_dir() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::write(&gene, b"bouchon").expect("bouchon posé");
         }
     }));
     let (r, _) = lancer(&o);
